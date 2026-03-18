@@ -40,6 +40,47 @@ def build_amt_risk_features(manifest: Dict[str, Any]) -> Dict[int, Dict[str, flo
     return out
 
 
+def build_dense_amt_risk_features(manifest: Dict[str, Any]) -> Dict[int, Dict[str, float]]:
+    """
+    Densify AMT probe errors across the interior of each probed anchor gap.
+
+    For a full AMT probe manifest, each probed midpoint carries `left_anchor`
+    and `right_anchor`. We expand that gap-level error over every skipped frame
+    in the interval so segment-level schedulers can score whole gaps instead of
+    isolated midpoint frames.
+    """
+    per_frame = manifest.get("per_frame", {}) or {}
+    dense: Dict[int, Dict[str, float]] = {}
+    for key, value in per_frame.items():
+        try:
+            frame_idx = int(key)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        try:
+            risk = float(value.get("amt_risk", value.get("probe_error", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            risk = 0.0
+
+        left_anchor = value.get("left_anchor", None)
+        right_anchor = value.get("right_anchor", None)
+        try:
+            left_idx = int(left_anchor)
+            right_idx = int(right_anchor)
+            if right_idx > left_idx + 1:
+                for dense_idx in range(left_idx + 1, right_idx):
+                    prev = float((dense.get(dense_idx, {}) or {}).get("amt_risk", 0.0) or 0.0)
+                    dense[dense_idx] = {"amt_risk": max(prev, float(risk))}
+                continue
+        except (TypeError, ValueError):
+            pass
+
+        prev = float((dense.get(frame_idx, {}) or {}).get("amt_risk", 0.0) or 0.0)
+        dense[frame_idx] = {"amt_risk": max(prev, float(risk))}
+    return dense
+
+
 def _frame_boxes(roi_payload: Mapping[str, Any], frame_idx: int) -> List[Dict[str, Any]]:
     frames = roi_payload.get("frames", {}) if isinstance(roi_payload, dict) else {}
     boxes = frames.get(str(int(frame_idx)), None)
@@ -235,28 +276,62 @@ def _load_amt_interpolator(
     from decompression.interpolation_amt import AmtInterpolator
 
     repo_dir, weights_path, variant = _resolve_amt_inputs(repo_root=repo_root, amt_cfg=amt_cfg)
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available for AMT probing.")
+    if torch.cuda.is_available():
+        device = "cuda"
+        fp16 = True
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+        fp16 = False
+    else:
+        device = "cpu"
+        fp16 = False
     return AmtInterpolator(
         amt_repo_dir=str(repo_dir),
         variant=str(variant),
         weights_path=str(weights_path),
-        device="cuda",
-        fp16=True,
+        device=device,
+        fp16=fp16,
         pad_to=16,
+        allow_cpu=True,
     )
 
 
-def _video_frame_at(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
+def _open_video_capture(video_path: Path) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video for AMT probes: {video_path}")
+    return cap
+
+
+def _video_frame_at(
+    cap: cv2.VideoCapture,
+    frame_idx: int,
+    *,
+    video_path: Path | None = None,
+    max_retries: int = 2,
+) -> tuple[np.ndarray, cv2.VideoCapture]:
     if frame_idx < 0:
         raise ValueError("frame_idx must be >= 0")
-    ok = cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
-    if not ok:
-        raise RuntimeError(f"Could not seek to frame {frame_idx}")
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        raise RuntimeError(f"Could not read frame {frame_idx}")
-    return frame
+    attempts = max(1, int(max_retries) + 1)
+    current_cap = cap
+    last_error: str | None = None
+    for attempt_idx in range(attempts):
+        ok = current_cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
+        if ok:
+            ok, frame = current_cap.read()
+            if ok and frame is not None:
+                return frame, current_cap
+            last_error = f"Could not read frame {frame_idx}"
+        else:
+            last_error = f"Could not seek to frame {frame_idx}"
+
+        if video_path is None or attempt_idx >= attempts - 1:
+            break
+
+        current_cap.release()
+        current_cap = _open_video_capture(video_path)
+
+    raise RuntimeError(last_error or f"Could not load frame {frame_idx}")
 
 
 def _union_box_range(
@@ -300,7 +375,7 @@ def generate_amt_probe_manifest(
     if len(roi_kept) < 2:
         return {
             "meta": {
-                "source": "gpu_amt_probe",
+                "source": "full_amt_probe",
                 "video_path": str(video_path_p),
                 "probe_count": 0,
                 "notes": "Not enough ROI anchors to probe.",
@@ -309,9 +384,7 @@ def generate_amt_probe_manifest(
         }
 
     interpolator = _load_amt_interpolator(repo_root=repo_root_p, amt_cfg=amt_cfg)
-    cap = cv2.VideoCapture(str(video_path_p))
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video for AMT probes: {video_path_p}")
+    cap = _open_video_capture(video_path_p)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
@@ -326,8 +399,8 @@ def generate_amt_probe_manifest(
             if gap <= 1 or gap > int(max_probe_gap_frames):
                 continue
             gap_count += 1
-            left_frame = _video_frame_at(cap, int(left_idx))
-            right_frame = _video_frame_at(cap, int(right_idx))
+            left_frame, cap = _video_frame_at(cap, int(left_idx), video_path=video_path_p)
+            right_frame, cap = _video_frame_at(cap, int(right_idx), video_path=video_path_p)
             union = _union_box_range(roi_payload, int(left_idx), int(right_idx))
             if union is None:
                 continue
@@ -352,7 +425,7 @@ def generate_amt_probe_manifest(
                     continue
                 chosen_probe_frames.add(probe_frame)
                 alpha = float(probe_frame - int(left_idx)) / float(gap)
-                target_frame = _video_frame_at(cap, int(probe_frame))
+                target_frame, cap = _video_frame_at(cap, int(probe_frame), video_path=video_path_p)
                 target_crop = _resize_if_needed(target_frame[y1:y2, x1:x2], int(max_crop_side))
                 pred_crop = interpolator.interpolate(left_crop, right_crop, alpha)
                 err = float(np.mean(np.abs(pred_crop.astype(np.float32) - target_crop.astype(np.float32))) / 255.0)
@@ -362,7 +435,7 @@ def generate_amt_probe_manifest(
                     "left_anchor": int(left_idx),
                     "right_anchor": int(right_idx),
                     "alpha": float(alpha),
-                    "source": "gpu_amt_probe",
+                    "source": "full_amt_probe",
                 }
                 probe_errors.append(float(err))
                 probe_count += 1
@@ -371,8 +444,9 @@ def generate_amt_probe_manifest(
 
     return {
         "meta": {
-            "source": "gpu_amt_probe",
+            "source": "full_amt_probe",
             "video_path": str(video_path_p),
+            "device": str(interpolator.device),
             "probe_count": int(probe_count),
             "gap_count": int(gap_count),
             "crop_margin_px": int(crop_margin_px),

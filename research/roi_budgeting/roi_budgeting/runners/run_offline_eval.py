@@ -20,6 +20,10 @@ from roi_budgeting.eval.bitrate import (
     summarize_selected_roi_bytes,
 )
 from roi_budgeting.eval.metrics import index_overlap, summarize_keep_policy
+from roi_budgeting.policy.budget_dp import (
+    build_segment_scores_from_frame_scores,
+    select_budgeted_roi_anchors,
+)
 from roi_budgeting.policy.fixed_baseline import (
     fixed_state_interval_keep,
     has_detection_from_frame_drop,
@@ -32,6 +36,7 @@ from roi_budgeting.policy.motion_only import (
     select_scored_roi_anchors_by_budget,
 )
 from roi_budgeting.signals.amt_risk import (
+    build_dense_amt_risk_features,
     build_amt_risk_features,
     build_amt_risk_proxy_features,
     load_amt_probe_manifest,
@@ -245,6 +250,95 @@ def _amt_feature_summary(amt_scores: Dict[int, Dict[str, float]]) -> Dict[str, A
         "amt_risk_mean": _safe_mean(risk_vals),
         "amt_risk_median": float(median(risk_vals)) if risk_vals else 0.0,
         "amt_risk_max": _safe_max(risk_vals),
+    }
+
+
+def _avg_selected(frames: list[int], lookup: Dict[int, Dict[str, float]], key: str) -> float:
+    if not frames:
+        return 0.0
+    return float(sum((lookup.get(frame_idx, {}) or {}).get(key, 0.0) or 0.0 for frame_idx in frames)) / float(len(frames))
+
+
+def _segment_guardrail_decision(
+    *,
+    cfg: Dict[str, Any],
+    baseline_budget_utilization: float,
+    proposed_budget_utilization: float,
+    primary_delta: float,
+) -> Dict[str, Any]:
+    evaluation_cfg = cfg.get("evaluation", {}) or {}
+    guardrail_cfg = (evaluation_cfg.get("guardrail", {}) or {})
+    enabled = bool(guardrail_cfg.get("enabled", False))
+    cheap_baseline_utilization_max = float(
+        guardrail_cfg.get("cheap_baseline_utilization_max", 0.5) or 0.0
+    )
+    min_primary_delta = float(
+        guardrail_cfg.get("min_primary_delta_when_baseline_cheap", 0.0) or 0.0
+    )
+    min_budget_increase = float(guardrail_cfg.get("min_budget_increase", 0.0) or 0.0)
+    budget_increase = float(proposed_budget_utilization - baseline_budget_utilization)
+
+    cheap_baseline = float(baseline_budget_utilization) <= float(cheap_baseline_utilization_max)
+    large_divergence = float(budget_increase) >= float(min_budget_increase)
+    weak_gain = float(primary_delta) < float(min_primary_delta)
+    applied = bool(enabled and cheap_baseline and large_divergence and weak_gain)
+
+    reason = None
+    if applied:
+        reason = (
+            "Fallback to the fixed baseline because the baseline ROI budget was already cheap "
+            "and the guarded v4 proposal did not clear the minimum primary-score gain."
+        )
+
+    return {
+        "enabled": bool(enabled),
+        "applied": bool(applied),
+        "reason": reason,
+        "selected_policy": ("fixed_baseline" if applied else "segment_budget_dp"),
+        "cheap_baseline_utilization_max": float(cheap_baseline_utilization_max),
+        "min_primary_delta_when_baseline_cheap": float(min_primary_delta),
+        "min_budget_increase": float(min_budget_increase),
+        "baseline_budget_utilization": float(baseline_budget_utilization),
+        "proposed_budget_utilization": float(proposed_budget_utilization),
+        "budget_utilization_increase": float(budget_increase),
+        "primary_delta_before_guardrail": float(primary_delta),
+        "cheap_baseline": bool(cheap_baseline),
+        "large_divergence": bool(large_divergence),
+        "weak_gain": bool(weak_gain),
+    }
+
+
+def _resolve_output_dir_from_cfg(cfg: Dict[str, Any]) -> Path | None:
+    paths_cfg = cfg.get("paths", {}) or {}
+    output_dir_raw = paths_cfg.get("output_dir", None)
+    if not output_dir_raw:
+        return None
+    output_dir = Path(str(output_dir_raw)).expanduser()
+    if output_dir.is_absolute():
+        return output_dir.resolve()
+    repo_root_raw = paths_cfg.get("repo_root", None)
+    if repo_root_raw:
+        repo_root = Path(str(repo_root_raw)).expanduser()
+        if not repo_root.is_absolute():
+            repo_root = (Path.cwd() / repo_root).resolve()
+        return (repo_root / output_dir).resolve()
+    return (Path.cwd() / output_dir).resolve()
+
+
+def _load_reference_experiment(cfg: Dict[str, Any], manifest_name: str) -> Dict[str, Any] | None:
+    output_dir = _resolve_output_dir_from_cfg(cfg)
+    if output_dir is None:
+        return None
+    manifest_path = output_dir / "manifests" / str(manifest_name)
+    if not manifest_path.exists():
+        return None
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    experiment = payload.get("experiment", {}) or {}
+    if not isinstance(experiment, dict):
+        return None
+    return {
+        "manifest_path": str(manifest_path),
+        "experiment": experiment,
     }
 
 
@@ -662,11 +756,6 @@ def _motion_uncertainty_amt_experiment(
     expected = roi_keep_indices(frame_drop_json)
     overlap = index_overlap(expected, proposed)
 
-    def _avg_selected(frames: list[int], lookup: Dict[int, Dict[str, float]], key: str) -> float:
-        if not frames:
-            return 0.0
-        return float(sum((lookup.get(frame_idx, {}) or {}).get(key, 0.0) or 0.0 for frame_idx in frames)) / float(len(frames))
-
     proposed_motion_mean = _avg_selected(proposed, motion_scores, "motion_score")
     proposed_unc_mean = _avg_selected(proposed, uncertainty_scores, "uncertainty_score")
     proposed_amt_mean = _avg_selected(proposed, amt_scores, "amt_risk")
@@ -747,6 +836,280 @@ def _motion_uncertainty_amt_experiment(
             ),
             "exact_match": bool(proposed == expected),
         },
+    }
+
+
+def _segment_budget_dp_experiment(
+    *,
+    cfg: Dict[str, Any],
+    frame_drop_json: Dict[str, Any],
+    video_meta: Dict[str, Any],
+    roi_payload: Dict[str, Any],
+    video_path: Path,
+    amt_manifest_path: Path | None,
+) -> Dict[str, Any]:
+    motion_features = build_motion_features(roi_payload)
+    motion_scores = build_motion_scores(motion_features)
+    uncertainty_features = build_uncertainty_features(roi_payload)
+    uncertainty_scores = build_uncertainty_scores(uncertainty_features)
+    amt_cfg = ((cfg.get("signals", {}) or {}).get("amt_risk", {}) or {})
+    if amt_manifest_path is not None and amt_manifest_path.exists():
+        amt_manifest = load_amt_probe_manifest(amt_manifest_path)
+        amt_scores = build_amt_risk_features(amt_manifest)
+        dense_amt_scores = build_dense_amt_risk_features(amt_manifest)
+        amt_meta = dict(amt_manifest.get("meta", {}) or {})
+        amt_meta["manifest_path"] = str(amt_manifest_path)
+        if not amt_scores:
+            raise RuntimeError(f"AMT probe manifest is empty: {amt_manifest_path}")
+    else:
+        amt_scores, amt_meta = build_amt_risk_proxy_features(
+            video_path=video_path,
+            roi_payload=roi_payload,
+            crop_margin_px=int(amt_cfg.get("crop_margin_px", 8) or 8),
+            max_crop_side=int(amt_cfg.get("max_crop_side", 256) or 256),
+        )
+        dense_amt_scores = dict(amt_scores)
+
+    byte_estimates, budget_model, bitrate_features = _estimate_roi_budget(
+        video_path=video_path,
+        roi_payload=roi_payload,
+        frame_drop_json=frame_drop_json,
+        video_meta=video_meta,
+        motion_scores=motion_scores,
+        cfg=cfg,
+    )
+    policy_cfg = cfg.get("policy", {}) or {}
+    objective = ((cfg.get("objective", {}) or {}).get("weights", {}) or {})
+    motion_w = float(objective.get("motion", 1.0) or 0.0)
+    uncertainty_w = float(objective.get("uncertainty", 0.0) or 0.0)
+    amt_w = float(objective.get("amt_risk", 0.0) or 0.0)
+
+    candidate_frames: list[int] = []
+    mandatory_frames: list[int] = []
+    for start, end in roi_segments(frame_drop_json):
+        seg_frames = list(range(int(start), int(end) + 1))
+        candidate_frames.extend(seg_frames)
+        if seg_frames:
+            first = int(seg_frames[0])
+            last = int(seg_frames[-1])
+            if bool(policy_cfg.get("force_keep_segment_bounds", True)) or bool(policy_cfg.get("force_keep_roi_birth", True)):
+                mandatory_frames.append(first)
+            if (bool(policy_cfg.get("force_keep_segment_bounds", True)) or bool(policy_cfg.get("force_keep_roi_death", True))) and last != first:
+                mandatory_frames.append(last)
+
+    candidate_frames = sorted(set(int(v) for v in candidate_frames))
+    mandatory_frames = sorted(set(int(v) for v in mandatory_frames))
+    if not candidate_frames:
+        raise RuntimeError("No ROI candidate frames were found for segment-DP scheduling.")
+
+    dense_combined_scores: Dict[int, float] = {}
+    for frame_idx in candidate_frames:
+        motion_score = float((motion_scores.get(frame_idx, {}) or {}).get("motion_score", 0.0) or 0.0)
+        uncertainty_score = float(
+            (uncertainty_scores.get(frame_idx, {}) or {}).get("uncertainty_score", 0.0) or 0.0
+        )
+        amt_score = float((dense_amt_scores.get(frame_idx, {}) or {}).get("amt_risk", 0.0) or 0.0)
+        dense_combined_scores[int(frame_idx)] = (
+            (motion_w * motion_score) + (uncertainty_w * uncertainty_score) + (amt_w * amt_score)
+        )
+
+    cost_map = {
+        int(frame_idx): float((rec.get("estimated_bytes", 0.0) or 0.0))
+        for frame_idx, rec in byte_estimates.items()
+    }
+    segment_scores = build_segment_scores_from_frame_scores(
+        candidate_frames=candidate_frames,
+        mandatory_frames=mandatory_frames,
+        frame_scores=dense_combined_scores,
+        frame_costs=cost_map,
+        max_gap_frames=int(policy_cfg.get("max_gap_frames", 12) or 12),
+    )
+    initial_anchor_bytes = float(cost_map.get(int(candidate_frames[0]), 0.0) or 0.0)
+    selection = select_budgeted_roi_anchors(
+        candidate_frames=candidate_frames,
+        mandatory_frames=mandatory_frames,
+        segment_scores=segment_scores,
+        bit_budget=float(budget_model.get("target_bytes", 0.0) or 0.0),
+        initial_bits=float(initial_anchor_bytes),
+    )
+    proposed = list(selection.kept_frames)
+    expected = roi_keep_indices(frame_drop_json)
+    overlap = index_overlap(expected, proposed)
+
+    proposed_motion_mean = _avg_selected(proposed, motion_scores, "motion_score")
+    proposed_unc_mean = _avg_selected(proposed, uncertainty_scores, "uncertainty_score")
+    proposed_amt_mean = _avg_selected(proposed, dense_amt_scores, "amt_risk")
+    baseline_motion_mean = _avg_selected(expected, motion_scores, "motion_score")
+    baseline_unc_mean = _avg_selected(expected, uncertainty_scores, "uncertainty_score")
+    baseline_amt_mean = _avg_selected(expected, dense_amt_scores, "amt_risk")
+    combined_mean = (
+        float(sum(dense_combined_scores.get(frame_idx, 0.0) for frame_idx in proposed)) / float(len(proposed))
+        if proposed
+        else 0.0
+    )
+    combined_baseline_mean = (
+        float(sum(dense_combined_scores.get(frame_idx, 0.0) for frame_idx in expected)) / float(len(expected))
+        if expected
+        else 0.0
+    )
+    duration_sec = float(video_meta.get("duration_sec", 0.0) or 0.0)
+    target_bytes = float(budget_model.get("target_bytes", 0.0) or 0.0)
+    proposed_rate = summarize_selected_roi_bytes(
+        frame_indices=proposed,
+        byte_estimates=byte_estimates,
+        duration_sec=duration_sec,
+        target_bytes=target_bytes,
+    )
+    baseline_rate = summarize_selected_roi_bytes(
+        frame_indices=expected,
+        byte_estimates=byte_estimates,
+        duration_sec=duration_sec,
+        target_bytes=target_bytes,
+    )
+    raw_proposal = {
+        "roi_kept_frames": int(len(proposed)),
+        "keep_summary": summarize_keep_policy(
+            total_frames=int(video_meta.get("frame_count", 0) or 0),
+            kept_frames=proposed,
+        ),
+        "first_kept_frames": proposed[:20],
+        "mean_motion_score_kept": float(proposed_motion_mean),
+        "mean_uncertainty_score_kept": float(proposed_unc_mean),
+        "mean_amt_risk_kept": float(proposed_amt_mean),
+        "mean_combined_score_kept": float(combined_mean),
+        **proposed_rate,
+    }
+    raw_comparison = {
+        "overlap": overlap,
+        "count_delta_vs_baseline": int(len(proposed) - len(expected)),
+        "mean_motion_score_delta": float(proposed_motion_mean - baseline_motion_mean),
+        "mean_uncertainty_score_delta": float(proposed_unc_mean - baseline_unc_mean),
+        "mean_amt_risk_delta": float(proposed_amt_mean - baseline_amt_mean),
+        "mean_combined_score_delta": float(combined_mean - combined_baseline_mean),
+        "estimated_roi_bytes_delta": float(
+            proposed_rate["estimated_roi_bytes"] - baseline_rate["estimated_roi_bytes"]
+        ),
+        "estimated_roi_kbps_delta": float(
+            proposed_rate["estimated_roi_kbps"] - baseline_rate["estimated_roi_kbps"]
+        ),
+        "exact_match": bool(proposed == expected),
+    }
+    guardrail = _segment_guardrail_decision(
+        cfg=cfg,
+        baseline_budget_utilization=float(baseline_rate.get("budget_utilization", 0.0) or 0.0),
+        proposed_budget_utilization=float(proposed_rate.get("budget_utilization", 0.0) or 0.0),
+        primary_delta=float(raw_comparison["mean_combined_score_delta"]),
+    )
+    guardrail["baseline_fallback_applied"] = bool(guardrail.get("applied", False))
+    guardrail["reference_fallback_applied"] = False
+    proposal_payload = dict(raw_proposal)
+    comparison_payload = dict(raw_comparison)
+    overlap_payload = overlap
+    if bool(guardrail.get("applied", False)):
+        proposal_payload = {
+            "roi_kept_frames": int(len(expected)),
+            "keep_summary": summarize_keep_policy(
+                total_frames=int(video_meta.get("frame_count", 0) or 0),
+                kept_frames=expected,
+            ),
+            "first_kept_frames": expected[:20],
+            "mean_motion_score_kept": float(baseline_motion_mean),
+            "mean_uncertainty_score_kept": float(baseline_unc_mean),
+            "mean_amt_risk_kept": float(baseline_amt_mean),
+            "mean_combined_score_kept": float(combined_baseline_mean),
+            **baseline_rate,
+        }
+        overlap_payload = index_overlap(expected, expected)
+        comparison_payload = {
+            "overlap": overlap_payload,
+            "count_delta_vs_baseline": 0,
+            "mean_motion_score_delta": 0.0,
+            "mean_uncertainty_score_delta": 0.0,
+            "mean_amt_risk_delta": 0.0,
+            "mean_combined_score_delta": 0.0,
+            "estimated_roi_bytes_delta": 0.0,
+            "estimated_roi_kbps_delta": 0.0,
+            "exact_match": True,
+        }
+    else:
+        reference_cfg = (((cfg.get("evaluation", {}) or {}).get("guardrail", {}) or {}).get("reference_fallback", {}) or {})
+        reference_enabled = bool(reference_cfg.get("enabled", False))
+        reference_manifest_name = str(reference_cfg.get("manifest_name", "") or "").strip()
+        reference_min_advantage = float(reference_cfg.get("min_primary_advantage", 0.0) or 0.0)
+        reference_payload = (
+            _load_reference_experiment(cfg=cfg, manifest_name=reference_manifest_name)
+            if reference_enabled and reference_manifest_name
+            else None
+        )
+        if reference_payload is not None:
+            reference_experiment = reference_payload.get("experiment", {}) or {}
+            reference_comparison = reference_experiment.get("comparison", {}) or {}
+            reference_proposal = reference_experiment.get("proposal", {}) or {}
+            reference_primary_delta = float(reference_comparison.get("mean_combined_score_delta", 0.0) or 0.0)
+            reference_budget_utilization = float(reference_proposal.get("budget_utilization", 0.0) or 0.0)
+            reference_better = float(reference_primary_delta) > (
+                float(raw_comparison["mean_combined_score_delta"]) + float(reference_min_advantage)
+            )
+            reference_feasible = float(reference_budget_utilization) <= 1.000001
+            guardrail["reference_manifest_path"] = str(reference_payload.get("manifest_path", ""))
+            guardrail["reference_primary_delta"] = float(reference_primary_delta)
+            guardrail["reference_budget_utilization"] = float(reference_budget_utilization)
+            guardrail["reference_min_primary_advantage"] = float(reference_min_advantage)
+            guardrail["reference_better"] = bool(reference_better)
+            guardrail["reference_feasible"] = bool(reference_feasible)
+            if reference_better and reference_feasible:
+                proposal_payload = dict(reference_proposal)
+                comparison_payload = dict(reference_comparison)
+                overlap_payload = dict(reference_comparison.get("overlap", {}) or {})
+                guardrail["applied"] = True
+                guardrail["reference_fallback_applied"] = True
+                guardrail["selected_policy"] = "v3_reference"
+                guardrail["reason"] = (
+                    "Fallback to the v3 reference schedule because it achieved a higher primary score "
+                    "than the raw v4 segment-DP proposal on this clip."
+                )
+
+    return {
+        "name": str(((cfg.get("experiment", {}) or {}).get("name", "v4_segment_dp_amt"))),
+        "description": str(
+            ((cfg.get("experiment", {}) or {}).get("description", "Segment-aware ROI budget DP with AMT gap risk."))
+        ),
+        "budget_model": budget_model,
+        "weights": {
+            "motion": motion_w,
+            "uncertainty": uncertainty_w,
+            "amt_risk": amt_w,
+        },
+        "motion_features": _motion_feature_summary(motion_scores),
+        "uncertainty_features": _uncertainty_feature_summary(uncertainty_scores),
+        "amt_features": _amt_feature_summary(dense_amt_scores),
+        "bitrate_features": bitrate_features,
+        "amt_probe": amt_meta,
+        "segment_dp": {
+            "candidate_frame_count": int(len(candidate_frames)),
+            "mandatory_frame_count": int(len(mandatory_frames)),
+            "edge_count": int(len(segment_scores)),
+            "initial_anchor_bytes": float(initial_anchor_bytes),
+            "optimized_total_distortion": float(selection.total_distortion),
+            "optimized_total_bits": float(selection.estimated_total_bits),
+            "lambda_penalty": float(selection.lambda_penalty),
+            "feasible": bool(selection.feasible),
+            "selected_policy": str(guardrail.get("selected_policy", "segment_budget_dp")),
+        },
+        "guardrail": guardrail,
+        "optimizer_proposal": raw_proposal,
+        "optimizer_comparison": raw_comparison,
+        "proposal": proposal_payload,
+        "baseline_reference": {
+            "roi_kept_frames": int(len(expected)),
+            "first_kept_frames": expected[:20],
+            "mean_motion_score_kept": float(baseline_motion_mean),
+            "mean_uncertainty_score_kept": float(baseline_unc_mean),
+            "mean_amt_risk_kept": float(baseline_amt_mean),
+            "mean_combined_score_kept": float(combined_baseline_mean),
+            **baseline_rate,
+        },
+        "comparison": comparison_payload,
     }
 
 
@@ -876,7 +1239,9 @@ def main() -> None:
 
     exp_cfg = cfg.get("experiment", {}) or {}
     exp_name = str(exp_cfg.get("name", "") or "").strip().lower()
+    policy_name = str(((cfg.get("policy", {}) or {}).get("name", "") or "").strip().lower())
     objective = ((cfg.get("objective", {}) or {}).get("weights", {}) or {})
+    segment_dp_requested = bool(exp_name == "v4_segment_dp_amt") or bool(policy_name == "segment_budget_dp")
     motion_only_requested = bool(exp_name == "v1_motion_only") or (
         float(objective.get("motion", 0.0) or 0.0) > 0.0
         and float(objective.get("uncertainty", 0.0) or 0.0) == 0.0
@@ -892,7 +1257,17 @@ def main() -> None:
         and float(objective.get("uncertainty", 0.0) or 0.0) > 0.0
         and float(objective.get("amt_risk", 0.0) or 0.0) > 0.0
     )
-    if motion_uncertainty_amt_requested:
+    if segment_dp_requested:
+        summary["experiment"] = _segment_budget_dp_experiment(
+            cfg=cfg,
+            frame_drop_json=frame_drop_json,
+            video_meta=video_meta,
+            roi_payload=roi_payload,
+            video_path=video_path,
+            amt_manifest_path=amt_manifest_path,
+        )
+        summary["status"] = "experiment_loaded"
+    elif motion_uncertainty_amt_requested:
         summary["experiment"] = _motion_uncertainty_amt_experiment(
             cfg=cfg,
             frame_drop_json=frame_drop_json,
@@ -932,7 +1307,9 @@ def main() -> None:
         summary["manifest_path"] = str(manifest_path)
 
     print(json.dumps(summary, indent=2, sort_keys=True))
-    if motion_uncertainty_amt_requested:
+    if segment_dp_requested:
+        print("Offline ROI segment-aware budget-DP experiment loaded successfully.")
+    elif motion_uncertainty_amt_requested:
         print("Offline ROI motion+uncertainty+AMT-risk experiment loaded successfully.")
     elif motion_uncertainty_requested:
         print("Offline ROI motion+uncertainty experiment loaded successfully.")

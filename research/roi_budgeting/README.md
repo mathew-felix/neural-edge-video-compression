@@ -4,6 +4,12 @@ This folder is an isolated sandbox for experiments on budget-aware ROI anchor se
 
 The current local budgeting path uses actual ROI temporal probe bytes by default rather than the earlier fixed keep-count proxy. It runs a masked-frame `x264` probe over ROI segments, spends anchors under the configured `roi_target_kbps`, and still allows the older calibrated proxy model as a fallback research option.
 
+The current leading policy is a guarded hybrid `v4`:
+
+- raw segment-aware ROI budget DP when that helps
+- fallback to the fixed baseline on cheap-safe clips
+- fallback to `v3` when `v3` is measurably better than raw `v4`
+
 The production pipeline remains untouched:
 
 - no edits to the repo root `src/`
@@ -20,6 +26,28 @@ Design and evaluate a budget-aware ROI keep policy that uses:
 - AMT reconstruction risk
 
 Background selection stays on the current fixed policy for now.
+
+## Current Status
+
+The current 12-clip benchmark result is:
+
+- `fixed_baseline`
+  - mean primary delta: `0.000000`
+  - mean estimated ROI bitrate: `96.343639 kbps`
+- `v3_motion_uncertainty_amt`
+  - mean primary delta: `0.147374`
+  - mean estimated ROI bitrate: `126.354324 kbps`
+- `v4_segment_dp_amt`
+  - mean primary delta: `0.176478`
+  - mean estimated ROI bitrate: `107.515719 kbps`
+
+The current aggregate report is:
+
+- `results/benchmark/_aggregate/experiment_aggregate.md`
+
+The current milestone note is:
+
+- `docs/milestone_v4_guarded.md`
 
 ## Layout
 
@@ -65,7 +93,7 @@ source .venv/bin/activate
 python -m roi_budgeting.runners.run_local_pipeline
 ```
 
-On non-CUDA machines, this automatically uses the clearly labeled AMT proxy fallback unless you pass `--strict-amt`.
+On non-CUDA machines, the research workspace can now run full AMT on CPU. Use `--strict-amt` when you want to require the full path and fail instead of falling back.
 
 To generate a compact experiment comparison table and plot from the saved manifests:
 
@@ -74,6 +102,25 @@ cd research/roi_budgeting
 source .venv/bin/activate
 python -m roi_budgeting.runners.run_experiment_report --config configs/local.yaml
 ```
+
+## Batch Benchmark
+
+To run the benchmark folder under `test/`:
+
+```bash
+cd research/roi_budgeting
+source .venv/bin/activate
+python -m roi_budgeting.runners.run_batch_benchmark --skip-v1 --skip-existing --continue-on-error
+```
+
+This writes per-clip manifests plus aggregate tables under:
+
+- `results/benchmark/`
+- `results/benchmark/_aggregate/`
+
+The batch runner is:
+
+- `roi_budgeting/runners/run_batch_benchmark.py`
 
 ## Colab
 

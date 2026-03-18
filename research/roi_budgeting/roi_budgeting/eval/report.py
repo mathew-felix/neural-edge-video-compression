@@ -114,9 +114,6 @@ def _experiment_row_from_manifest(payload: Mapping[str, Any], *, manifest_name: 
 def build_report_rows(*, manifests_dir: str | Path) -> List[Dict[str, Any]]:
     manifest_root = Path(manifests_dir).expanduser().resolve()
     baseline_manifest = manifest_root / "offline_eval_summary.json"
-    v1_manifest = manifest_root / "v1_motion_only_summary.json"
-    v2_manifest = manifest_root / "v2_motion_uncertainty_summary.json"
-    v3_manifest = manifest_root / "v3_motion_uncertainty_amt_summary.json"
 
     if not baseline_manifest.exists():
         raise FileNotFoundError(f"Baseline manifest is missing: {baseline_manifest}")
@@ -125,7 +122,12 @@ def build_report_rows(*, manifests_dir: str | Path) -> List[Dict[str, Any]]:
     baseline_payload = load_json(baseline_manifest)
     rows.append(_baseline_row_from_manifest(baseline_payload, manifest_name=baseline_manifest.name))
 
-    for manifest_path in [v1_manifest, v2_manifest, v3_manifest]:
+    manifest_paths = sorted(
+        path
+        for path in manifest_root.glob("*_summary.json")
+        if path.name != baseline_manifest.name
+    )
+    for manifest_path in manifest_paths:
         if not manifest_path.exists():
             continue
         rows.append(_experiment_row_from_manifest(load_json(manifest_path), manifest_name=manifest_path.name))

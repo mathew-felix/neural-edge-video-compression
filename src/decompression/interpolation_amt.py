@@ -32,13 +32,33 @@ def _build_network_cfg(variant: str) -> Dict[str, Any]:
     raise ValueError("AMT variant must be one of: amt-s, amt-l")
 
 
-def _resolve_device(device: str) -> torch.device:
+def _resolve_device(device: str, *, allow_cpu: bool = False) -> torch.device:
     d = str(device).strip().lower()
-    if d in {"cpu", "mps"}:
+    if allow_cpu and d in {"", "auto"}:
+        if torch.cuda.is_available():
+            d = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            d = "mps"
+        else:
+            d = "cpu"
+
+    if allow_cpu:
+        if d == "cpu":
+            return torch.device("cpu")
+        if d == "mps":
+            if not hasattr(torch.backends, "mps") or not torch.backends.mps.is_available():
+                raise RuntimeError("AMT interpolation requested device=mps, but MPS is not available.")
+            return torch.device("mps")
+    elif d in {"cpu", "mps"}:
         raise ValueError("Strict GPU runtime forbids AMT interpolation device=cpu/mps.")
+
     if d not in {"", "auto", "cuda"} and not d.startswith("cuda:"):
+        if allow_cpu:
+            raise ValueError("AMT interpolation device must be one of: auto, cpu, mps, cuda, cuda:<index>.")
         raise ValueError("AMT interpolation device must be one of: auto, cuda, cuda:<index> for strict GPU runtime.")
     if not torch.cuda.is_available():
+        if allow_cpu:
+            return torch.device("cpu")
         raise RuntimeError("Strict GPU runtime requires CUDA for AMT interpolation.")
     if d in {"", "auto", "cuda"}:
         selected_idx = 0
@@ -85,6 +105,7 @@ class AmtInterpolator:
         device: str = "auto",
         fp16: bool = True,
         pad_to: int = 16,
+        allow_cpu: bool = False,
     ) -> None:
         repo_dir = Path(amt_repo_dir).expanduser().resolve()
         weights = Path(weights_path).expanduser().resolve()
@@ -101,7 +122,7 @@ class AmtInterpolator:
             state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
             net.load_state_dict(state, strict=True)
 
-        self.device = _resolve_device(device)
+        self.device = _resolve_device(device, allow_cpu=allow_cpu)
         self.model = net.to(self.device).eval()
         self.pad_to = max(1, int(pad_to))
         self.fp16 = bool(fp16) and self.device.type == "cuda"

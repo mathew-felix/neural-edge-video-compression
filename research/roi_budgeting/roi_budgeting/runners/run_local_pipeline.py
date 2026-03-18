@@ -77,6 +77,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-v1", action="store_true", help="Skip the motion-only experiment")
     parser.add_argument("--skip-v2", action="store_true", help="Skip the motion+uncertainty experiment")
     parser.add_argument("--skip-v3", action="store_true", help="Skip the motion+uncertainty+AMT experiment")
+    parser.add_argument("--skip-v4", action="store_true", help="Skip the segment-aware budget-DP AMT experiment")
     parser.add_argument(
         "--strict-amt",
         action="store_true",
@@ -217,6 +218,20 @@ def main() -> None:
             cwd=research_dir,
         )
 
+    if not args.skip_v4:
+        _run(
+            [
+                sys.executable,
+                "-m",
+                "roi_budgeting.runners.run_offline_eval",
+                "--config",
+                str(runtime_research_path),
+                "--experiment-config",
+                "configs/experiments/v4_segment_dp_amt.yaml",
+            ],
+            cwd=research_dir,
+        )
+
     summary = {
         "repo_root": str(repo_root),
         "video_path": str(video_path),
@@ -230,6 +245,7 @@ def main() -> None:
             "v1": str((manifests_dir / "v1_motion_only_summary.json").resolve()),
             "v2": str((manifests_dir / "v2_motion_uncertainty_summary.json").resolve()),
             "v3": str((manifests_dir / "v3_motion_uncertainty_amt_summary.json").resolve()),
+            "v4": str((manifests_dir / "v4_segment_dp_amt_summary.json").resolve()),
         },
         "amt_mode": "strict" if args.strict_amt else "proxy_fallback_allowed",
     }

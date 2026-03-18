@@ -22,3 +22,8 @@ results/plots/*.pdf
 results/plots/*.svg
 results/plots/*.mp4
 results/plots/*.html
+
+results/benchmark/*
+!results/benchmark/_aggregate/
+!results/benchmark/_aggregate/*.csv
+!results/benchmark/_aggregate/*.md

@@ -48,8 +48,8 @@ signals:
     crop_margin_px: 8
     max_crop_side: 256
     model: "amt-s"
-    weights_path: "../../models/amt-s.pth"
-    repo_dir: "../../_third_party_amt"
+    weights_path: "models/amt-s.pth"
+    repo_dir: "_third_party_amt"
 
 objective:
   weights:
