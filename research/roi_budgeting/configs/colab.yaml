@@ -1,0 +1,63 @@
+project:
+  name: roi_budgeting_colab
+
+paths:
+  repo_root: "/content/neural-edge-video-compression"
+  output_dir: "/content/neural-edge-video-compression/research/roi_budgeting/results"
+  video_path: ""
+  roi_detections_json: ""
+  frame_drop_json: ""
+  amt_probe_manifest: "/content/neural-edge-video-compression/research/roi_budgeting/results/manifests/amt_probe_manifest.json"
+  archive_zip: ""
+
+budget:
+  roi_budget_mode: target_kbps
+  roi_target_kbps: 150.0
+  bitrate_estimator:
+    model: roi_probe_x264_v1
+    calibration: direct_probe_bytes
+    max_crop_side: 160
+    probe_codec: h264
+    probe_quality: 15
+    probe_max_side: 512
+    probe_frame_mode: masked_frame
+    base_weight: 1.0
+    area_weight: 3.5
+    texture_weight: 1.25
+    motion_weight: 0.75
+    count_weight: 0.35
+
+policy:
+  name: budget_dp
+  chunk_seconds: 1.0
+  max_gap_frames: 12
+  force_keep_roi_birth: true
+  force_keep_roi_death: true
+  force_keep_segment_bounds: true
+
+signals:
+  motion:
+    enabled: true
+  uncertainty:
+    enabled: true
+    calibrated: true
+  amt_risk:
+    enabled: true
+    probe_positions: [0.5]
+    max_probe_gap_frames: 12
+    crop_margin_px: 8
+    max_crop_side: 256
+    model: "amt-s"
+    weights_path: "/content/neural-edge-video-compression/models/amt-s.pth"
+    repo_dir: "/content/neural-edge-video-compression/_third_party_amt"
+
+objective:
+  weights:
+    motion: 1.0
+    uncertainty: 1.0
+    amt_risk: 1.0
+    event_penalty: 5.0
+
+evaluation:
+  compare_to_fixed_baseline: true
+  save_manifest: true

@@ -9,6 +9,8 @@ outputs/
 output/
 data/
 !data/.gitkeep
+!research/roi_budgeting/roi_budgeting/data/
+!research/roi_budgeting/roi_budgeting/data/**
 models/
 !models/.gitkeep
 experiments/
