@@ -13,6 +13,7 @@ models/
 !models/.gitkeep
 experiments/
 logs/
+! DCVC
 
 # Python Cache & Compiled Files
 __pycache__/
@@ -65,3 +66,16 @@ temp/
 *~
 .DS_Store
 Thumbs.db
+
+# DCVC source tree: keep source files, ignore only generated artifacts.
+!DCVC/
+!DCVC/src/
+!DCVC/src/**
+DCVC/src/**/__pycache__/
+DCVC/src/**/*.py[cod]
+DCVC/src/**/*.pyd
+DCVC/src/**/*.so
+DCVC/src/**/build/
+DCVC/src/**/dist/
+DCVC/src/**/*.egg-info/
+DCVC/src/**/*.egg-info/**
