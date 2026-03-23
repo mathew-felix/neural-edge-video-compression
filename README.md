@@ -4,13 +4,10 @@
 
 The pre-trained YOLOv9 and DCVC models are hosted in the [GitHub Releases](../../releases) section of this repository.
 
-1. Go to the [Releases page](../../releases) and download the model files attached to the latest release:
-   - `MDV6-yolov9-c.onnx`
-   - `MDV6-yolov9-c.pt`
-   - `cvpr2025_image.pth.tar`
-   - `cvpr2025_video.pth.tar`
-   - `amt-s.pth` (only needed if AMT interpolation is enabled)
-2. Place these downloaded files into the `models/` directory before running the pipeline.
+1. Run the automated script to download all the pre-trained models into the `models/` directory:
+   ```bash
+   python scripts/download_models.py
+   ```
 
 ---
 
