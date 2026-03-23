@@ -407,6 +407,9 @@ def _apply_dcvc_overrides(meta: Dict[str, Any], dec_cfg: Dict[str, Any]) -> None
     meta["dcvc"] = dcvc_cfg
 
 
+_AMT_MIN_SIDE = 128
+
+
 def _interpolate_many_batched(
     interpolator: AmtInterpolator,
     frame0_bgr: np.ndarray,
@@ -436,6 +439,19 @@ def _interpolate_many_batched(
             work0 = cv2.resize(frame0_bgr, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
             work1 = cv2.resize(frame1_bgr, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
 
+    work_h, work_w = work0.shape[:2]
+    min_pad_h = max(0, _AMT_MIN_SIDE - work_h)
+    min_pad_w = max(0, _AMT_MIN_SIDE - work_w)
+    if min_pad_h > 0 or min_pad_w > 0:
+        top = min_pad_h // 2
+        bottom = min_pad_h - top
+        left = min_pad_w // 2
+        right = min_pad_w - left
+        work0 = cv2.copyMakeBorder(work0, top, bottom, left, right, cv2.BORDER_REFLECT_101)
+        work1 = cv2.copyMakeBorder(work1, top, bottom, left, right, cv2.BORDER_REFLECT_101)
+    else:
+        top = left = 0
+
     in0 = interpolator._bgr_to_tensor(work0).to(interpolator.device, non_blocking=True)
     in1 = interpolator._bgr_to_tensor(work1).to(interpolator.device, non_blocking=True)
     in0, pad = _pad_to_divisor(in0, interpolator.pad_to)
@@ -459,6 +475,8 @@ def _interpolate_many_batched(
             pred = _unpad(pred, pad)
             for j in range(b):
                 mid = interpolator._tensor_to_bgr(pred[j : j + 1])
+                if min_pad_h > 0 or min_pad_w > 0:
+                    mid = mid[top : top + work_h, left : left + work_w]
                 if mid.shape[0] != orig_h or mid.shape[1] != orig_w:
                     mid = cv2.resize(mid, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
                 out.append(mid)
@@ -829,6 +847,7 @@ def _build_roi_segment(
         batch_size=batch_size,
         max_crop_side=max_crop_side,
     )
+
     return segment
 
 
@@ -1117,77 +1136,34 @@ def main() -> None:
             if int(np.count_nonzero(mask)) == 0:
                 out = bg_f.copy()
             else:
-                roi_source: Optional[np.ndarray] = None
+                _ctx_kwargs = dict(
+                    roi_indices=roi_indices,
+                    roi_positions=roi_positions,
+                    roi_store=roi_store,
+                    bg_indices=bg_indices,
+                    bg_positions=bg_positions,
+                    bg_store=bg_store,
+                    width=ref_w,
+                    height=ref_h,
+                    mask_source=mask_source,
+                    roi_boxes_map=roi_boxes_map,
+                    frame_drop_json=frame_drop_json,
+                    roi_min_conf=roi_min_conf,
+                    roi_dilate_px=roi_dilate_px,
+                    roi_blend_edge_px=int(roi_blend_edge_px),
+                    bg_cache=bg_frame_cache,
+                    roi_cache=roi_frame_cache,
+                    context_cache=roi_context_cache,
+                    mask_cache=mask_cache,
+                    alpha_cache=alpha_cache,
+                )
                 slot = roi_slot_by_frame.get(int(t), None)
                 if slot is not None:
-                    roi_source = _anchor_context_at(
-                        slot=int(slot),
-                        roi_indices=roi_indices,
-                        roi_positions=roi_positions,
-                        roi_store=roi_store,
-                        bg_indices=bg_indices,
-                        bg_positions=bg_positions,
-                        bg_store=bg_store,
-                        width=ref_w,
-                        height=ref_h,
-                        mask_source=mask_source,
-                        roi_boxes_map=roi_boxes_map,
-                        frame_drop_json=frame_drop_json,
-                        roi_min_conf=roi_min_conf,
-                        roi_dilate_px=roi_dilate_px,
-                        roi_blend_edge_px=int(roi_blend_edge_px),
-                        bg_cache=bg_frame_cache,
-                        roi_cache=roi_frame_cache,
-                        context_cache=roi_context_cache,
-                        mask_cache=mask_cache,
-                        alpha_cache=alpha_cache,
-                    )
+                    out = _anchor_context_at(slot=int(slot), **_ctx_kwargs)
                 elif t < int(roi_indices[0]):
-                    roi_source = _anchor_context_at(
-                        slot=0,
-                        roi_indices=roi_indices,
-                        roi_positions=roi_positions,
-                        roi_store=roi_store,
-                        bg_indices=bg_indices,
-                        bg_positions=bg_positions,
-                        bg_store=bg_store,
-                        width=ref_w,
-                        height=ref_h,
-                        mask_source=mask_source,
-                        roi_boxes_map=roi_boxes_map,
-                        frame_drop_json=frame_drop_json,
-                        roi_min_conf=roi_min_conf,
-                        roi_dilate_px=roi_dilate_px,
-                        roi_blend_edge_px=int(roi_blend_edge_px),
-                        bg_cache=bg_frame_cache,
-                        roi_cache=roi_frame_cache,
-                        context_cache=roi_context_cache,
-                        mask_cache=mask_cache,
-                        alpha_cache=alpha_cache,
-                    )
+                    out = _anchor_context_at(slot=0, **_ctx_kwargs)
                 elif t > int(roi_indices[-1]):
-                    roi_source = _anchor_context_at(
-                        slot=len(roi_indices) - 1,
-                        roi_indices=roi_indices,
-                        roi_positions=roi_positions,
-                        roi_store=roi_store,
-                        bg_indices=bg_indices,
-                        bg_positions=bg_positions,
-                        bg_store=bg_store,
-                        width=ref_w,
-                        height=ref_h,
-                        mask_source=mask_source,
-                        roi_boxes_map=roi_boxes_map,
-                        frame_drop_json=frame_drop_json,
-                        roi_min_conf=roi_min_conf,
-                        roi_dilate_px=roi_dilate_px,
-                        roi_blend_edge_px=int(roi_blend_edge_px),
-                        bg_cache=bg_frame_cache,
-                        roi_cache=roi_frame_cache,
-                        context_cache=roi_context_cache,
-                        mask_cache=mask_cache,
-                        alpha_cache=alpha_cache,
-                    )
+                    out = _anchor_context_at(slot=len(roi_indices) - 1, **_ctx_kwargs)
                 else:
                     right = bisect_right(roi_indices, int(t))
                     left_slot = max(0, int(right - 1))
@@ -1195,27 +1171,8 @@ def main() -> None:
                     li = int(roi_indices[left_slot])
                     ri = int(roi_indices[right_slot])
                     if right_slot == left_slot or t <= li or t >= ri:
-                        roi_source = _anchor_context_at(
-                            slot=int(left_slot if t <= li else right_slot),
-                            roi_indices=roi_indices,
-                            roi_positions=roi_positions,
-                            roi_store=roi_store,
-                            bg_indices=bg_indices,
-                            bg_positions=bg_positions,
-                            bg_store=bg_store,
-                            width=ref_w,
-                            height=ref_h,
-                            mask_source=mask_source,
-                            roi_boxes_map=roi_boxes_map,
-                            frame_drop_json=frame_drop_json,
-                            roi_min_conf=roi_min_conf,
-                            roi_dilate_px=roi_dilate_px,
-                            roi_blend_edge_px=int(roi_blend_edge_px),
-                            bg_cache=bg_frame_cache,
-                            roi_cache=roi_frame_cache,
-                            context_cache=roi_context_cache,
-                            mask_cache=mask_cache,
-                            alpha_cache=alpha_cache,
+                        out = _anchor_context_at(
+                            slot=int(left_slot if t <= li else right_slot), **_ctx_kwargs,
                         )
                     else:
                         if (
@@ -1257,21 +1214,20 @@ def main() -> None:
                         if bbox is not None and 0 <= mid_idx < len(mids):
                             x0, y0, x1, y1 = bbox
                             roi_source[y0:y1, x0:x1] = mids[mid_idx]
-
-                alpha = _alpha_at(
-                    t,
-                    width=ref_w,
-                    height=ref_h,
-                    mask_source=mask_source,
-                    roi_boxes_map=roi_boxes_map,
-                    frame_drop_json=frame_drop_json,
-                    roi_min_conf=roi_min_conf,
-                    roi_dilate_px=roi_dilate_px,
-                    blend_edge_px=int(roi_blend_edge_px),
-                    mask_cache=mask_cache,
-                    alpha_cache=alpha_cache,
-                )
-                out = bg_f.copy() if roi_source is None else rd._compose_soft(roi_source, bg_f, alpha)
+                        alpha = _alpha_at(
+                            t,
+                            width=ref_w,
+                            height=ref_h,
+                            mask_source=mask_source,
+                            roi_boxes_map=roi_boxes_map,
+                            frame_drop_json=frame_drop_json,
+                            roi_min_conf=roi_min_conf,
+                            roi_dilate_px=roi_dilate_px,
+                            blend_edge_px=int(roi_blend_edge_px),
+                            mask_cache=mask_cache,
+                            alpha_cache=alpha_cache,
+                        )
+                        out = rd._compose_soft(roi_source, bg_f, alpha)
 
             if roi_temporal_stabilize and prev_out is not None:
                 if stab_kernel is not None:

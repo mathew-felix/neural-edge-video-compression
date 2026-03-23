@@ -55,6 +55,9 @@ frame_removal:
     bg_idle_interval: 10
 
 compression:
+  # Low-memory mode streams ROI/BG frames into the DCVC encoder instead of
+  # caching all kept full-resolution frames in RAM (reduces peak CPU RAM).
+  low_memory: true
   dcvc:
     repo_dir: "DCVC"
     model_i: "models/cvpr2025_image.pth.tar"

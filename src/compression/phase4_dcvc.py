@@ -180,6 +180,64 @@ def _apply_roi_mask(frame: np.ndarray, boxes: List[Any], *, roi_min_conf: float 
     return out
 
 
+def _iter_kept_roi_frames(
+    *,
+    video_path: Path,
+    roi_kept_frames: List[int],
+    roi_bbox_map: Mapping[Any, Any],
+    roi_min_conf: float,
+) -> Iterable[Tuple[int, np.ndarray]]:
+    """
+    Stream ROI frames (masked) directly from the video without caching all frames in RAM.
+    """
+    roi_keep_set = set(int(x) for x in roi_kept_frames)
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video for ROI keep streaming: {video_path}")
+
+    src_idx = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if src_idx in roi_keep_set:
+                yield int(src_idx), _apply_roi_mask(
+                    frame,
+                    _boxes_for_frame(roi_bbox_map, src_idx),
+                    roi_min_conf=float(roi_min_conf),
+                )
+            src_idx += 1
+    finally:
+        cap.release()
+
+
+def _iter_kept_bg_frames(
+    *,
+    video_path: Path,
+    bg_kept_frames: List[int],
+) -> Iterable[Tuple[int, np.ndarray]]:
+    """
+    Stream BG frames directly from the video without caching all frames in RAM.
+    """
+    bg_keep_set = set(int(x) for x in bg_kept_frames)
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video for BG keep streaming: {video_path}")
+
+    src_idx = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if src_idx in bg_keep_set:
+                yield int(src_idx), frame
+            src_idx += 1
+    finally:
+        cap.release()
+
+
 def _open_frame_store(path: Path, frame_count: int, info: VideoInfo) -> np.memmap:
     return np.lib.format.open_memmap(
         path,
@@ -325,45 +383,70 @@ def compress_keep_streams_dcvc(
     bg_qp_p = int(quality_cfg.get("bg_qp_p", bg_qp_i))
     min_conf = float(roi_cfg.get("min_conf", 0.25))
     requested_dilate_px = int(roi_cfg.get("dilate_px", 0))
+    low_memory = bool(compression_cfg.get("low_memory", False))
 
     src = probe_video(str(source_video))
     info = VideoInfo(width=int(src.width), height=int(src.height), fps=float(src.fps), frames=int(src.frames))
     roi_indices = _pick_indices(frame_drop_result, "roi_kept_frames", "kept_frames")
     bg_indices = _pick_indices(frame_drop_result, "bg_kept_frames", "kept_frames")
-    with tempfile.TemporaryDirectory(prefix="wildroi_phase4_") as td:
-        cached_streams = _capture_rendered_kept_frames_single_pass(
-            video_path=source_video,
+    if low_memory:
+        # Stream frames directly into the encoder to avoid caching all kept frames
+        # as full-resolution arrays in RAM (the source of multi-GB RSS spikes).
+        roi_encoded = encode_dcvc_frames_to_bytes(
+            _iter_kept_roi_frames(
+                video_path=source_video,
+                roi_kept_frames=roi_indices,
+                roi_bbox_map=roi_bbox_map,
+                roi_min_conf=float(min_conf),
+            ),
             info=info,
-            roi_kept_frames=roi_indices,
-            bg_kept_frames=bg_indices,
-            roi_bbox_map=roi_bbox_map,
-            roi_min_conf=float(min_conf),
-            work_dir=Path(td),
+            cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": roi_qp_i, "qp_p": roi_qp_p}},
+            video_path=f"{source_video}#roi_stream",
         )
-        try:
-            roi_encoded = encode_dcvc_frames_to_bytes(
-                _iter_cached_frames(
-                    cached_streams.get("roi_store", None),
-                    cached_streams.get("roi_indices", []),
-                    int(cached_streams.get("roi_count", 0) or 0),
-                ),
+        bg_encoded = encode_dcvc_frames_to_bytes(
+            _iter_kept_bg_frames(
+                video_path=source_video,
+                bg_kept_frames=bg_indices,
+            ),
+            info=info,
+            cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": bg_qp_i, "qp_p": bg_qp_p}},
+            video_path=f"{source_video}#bg_stream",
+        )
+    else:
+        with tempfile.TemporaryDirectory(prefix="wildroi_phase4_") as td:
+            cached_streams = _capture_rendered_kept_frames_single_pass(
+                video_path=source_video,
                 info=info,
-                cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": roi_qp_i, "qp_p": roi_qp_p}},
-                video_path=f"{source_video}#roi_stream",
+                roi_kept_frames=roi_indices,
+                bg_kept_frames=bg_indices,
+                roi_bbox_map=roi_bbox_map,
+                roi_min_conf=float(min_conf),
+                work_dir=Path(td),
             )
-            bg_encoded = encode_dcvc_frames_to_bytes(
-                _iter_cached_frames(
-                    cached_streams.get("bg_store", None),
-                    cached_streams.get("bg_indices", []),
-                    int(cached_streams.get("bg_count", 0) or 0),
-                ),
-                info=info,
-                cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": bg_qp_i, "qp_p": bg_qp_p}},
-                video_path=f"{source_video}#bg_stream",
-            )
-        finally:
-            _close_memmap(cached_streams.get("roi_store", None))
-            _close_memmap(cached_streams.get("bg_store", None))
+            try:
+                roi_encoded = encode_dcvc_frames_to_bytes(
+                    _iter_cached_frames(
+                        cached_streams.get("roi_store", None),
+                        cached_streams.get("roi_indices", []),
+                        int(cached_streams.get("roi_count", 0) or 0),
+                    ),
+                    info=info,
+                    cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": roi_qp_i, "qp_p": roi_qp_p}},
+                    video_path=f"{source_video}#roi_stream",
+                )
+                bg_encoded = encode_dcvc_frames_to_bytes(
+                    _iter_cached_frames(
+                        cached_streams.get("bg_store", None),
+                        cached_streams.get("bg_indices", []),
+                        int(cached_streams.get("bg_count", 0) or 0),
+                    ),
+                    info=info,
+                    cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": bg_qp_i, "qp_p": bg_qp_p}},
+                    video_path=f"{source_video}#bg_stream",
+                )
+            finally:
+                _close_memmap(cached_streams.get("roi_store", None))
+                _close_memmap(cached_streams.get("bg_store", None))
 
     roi_bytes = bytes(roi_encoded["bitstream_bytes"])
     bg_bytes = bytes(bg_encoded["bitstream_bytes"])
