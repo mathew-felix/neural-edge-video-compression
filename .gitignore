@@ -5,11 +5,12 @@ env/
 .env
 
 # Output & Data Directories
-outputs/
+outputs/*
+!outputs/.gitkeep
 output/
-data/
+data/*
 !data/.gitkeep
-models/
+models/*
 !models/.gitkeep
 experiments/
 logs/
@@ -52,6 +53,7 @@ htmlcov/
 *.zip
 *.tar.gz
 *.tar
+docs/figures/*.pdf
 
 # Logs & Temporary Files
 *.log

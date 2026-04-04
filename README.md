@@ -1,56 +1,166 @@
-# Neural ROI-Aware Video Compression for Wildlife Monitoring on Edge Devices
+# Neural ROI-Aware Video Compression for Wildlife Monitoring Under Edge Constraints
 
-## Pre-requisites & Models
+This repository contains the code artifact for a master's-thesis pipeline that compresses wildlife video by prioritizing the animal region of interest (ROI) over the background. The system combines sparse ROI generation, dual-timeline frame selection, learned compression, and archive-only reconstruction.
 
-The pre-trained YOLOv9 and DCVC models are hosted in the [GitHub Releases](../../releases) section of this repository.
+The intended audience is:
 
-1. Run the automated script to download all the pre-trained models into the `models/` directory:
-   ```bash
-   python scripts/download_models.py
-   ```
+- thesis committee members
+- recruiters or hiring managers reviewing the project
+- researchers who want to understand the system layout
+- future lab members or collaborators extending the pipeline
 
----
+This repository should read as a thesis artifact, not as an internal scratch repo.
 
-The entry points are:
+## What The System Does
+
+At a high level, the pipeline:
+
+1. detects or propagates animal ROIs sparsely instead of running dense detection on every frame
+2. keeps ROI and background on separate timelines
+3. compresses ROI and background streams independently
+4. packages the transmitted result into a self-contained archive
+5. reconstructs the video on the server from that archive alone
+
+Core entry points:
 
 - `run_compression.py`
 - `run_decompression.py`
 
-## What This Runs
+## Thesis-Facing Result Snapshot
 
-- `run_compression.py` creates a compressed archive (`.zip`)
-- `run_decompression.py` reconstructs video from that archive
-- Default compression output location from the shipped GPU config: `outputs/compression/`
-- Decompression output should usually be passed with `--output`
+These numbers summarize the defended thesis result and help readers quickly understand why the project matters:
 
-## GPU Profile Layout
+- aggregate transmitted-size reduction on held-out evaluation: `97.4%`
+- aggregate compression ratio on held-out evaluation: `38.52x`
+- detector-call reduction in the sparse ROI stage: `93.28%`
+- ROI-stage speedup versus dense detection: `4.41x`
+- released-pipeline mean ROI PSNR: `36.12 dB`
+- released-pipeline mean ROI MS-SSIM: `0.9758`
 
-- `configs/gpu/compression.yaml`
-- `configs/gpu/decompression.yaml`
-- `docker/Dockerfile.gpu`
-- `docker/compose.gpu.yaml`
+These are thesis-level artifact numbers, not generic promises for every possible deployment setting.
+
+See [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md) for a cleaner thesis-facing summary.
+See [docs/project_summary.md](docs/project_summary.md) for a shorter recruiter-friendly version.
+
+## Reproducibility
+
+This repo has been validated as a runnable code artifact on a real Windows GPU setup, not just as a static code dump.
+
+The strongest reproducibility anchors are:
+
+- locked package versions in [docker/requirements.gpu.txt](docker/requirements.gpu.txt)
+- pinned `pip`, `torch`, and `torchvision` versions in the bootstrap paths
+- SHA256-verified model downloads via [docs/model_checksums.sha256](docs/model_checksums.sha256)
+- a recorded smoke-test validation note in [docs/reproducibility_validation.md](docs/reproducibility_validation.md)
+
+Validated environment snapshot:
+
+- Windows `10.0.26200.8037`
+- Python `3.12.0`
+- PyTorch `2.10.0+cu126`
+- `NVIDIA GeForce RTX 3070 Ti Laptop GPU`
+
+## GitHub Figure Set
+
+The public figure set in [docs/figures/](docs/figures/) is aligned to the defended thesis, but it intentionally avoids LPIPS-based charts. For GitHub, the emphasis is:
+
+- pipeline structure
+- detector savings and ROI continuity
+- runtime bottlenecks
+- qualitative day and night examples
+- size and quality discussion in text using ROI PSNR and ROI MS-SSIM
+
+![GitHub summary figure](docs/figures/08_github_summary.png)
+
+See [docs/figures/README.md](docs/figures/README.md) for the exact figure list and thesis-to-repo mapping.
+
+## Repository Layout
+
+Top-level structure:
+
+- `configs/`
+  runtime configuration profiles
+- `src/`
+  project source code organized by pipeline stage
+- `scripts/`
+  stage-wise sanity checks and model download helpers
+- `tests/`
+  test suite for configuration, runtime contracts, and stage logic
+- `docker/`
+  GPU-focused container setup
+- `DCVC/`
+  vendored third-party compression dependency
+- `_third_party_amt/`
+  vendored third-party interpolation dependency
+- `run_compression.py`
+  main compression entry point
+- `run_decompression.py`
+  main decompression entry point
+
+See [docs/REPOSITORY_STRUCTURE.md](docs/REPOSITORY_STRUCTURE.md) for a more explicit repo map and what each area should contain.
+See [docs/dataset_and_eval.md](docs/dataset_and_eval.md) for thesis-facing evaluation context and metric interpretation.
+
+## What Is Not Stored In Git
+
+The repo intentionally does not ship large runtime assets or evaluation data:
+
+- dataset videos
+- downloaded model weights
+- generated archives
+- reconstructed videos
+- experiment outputs
+
+The expected local working directories are:
+
+- `data/`
+- `models/`
+- `outputs/`
+
+These are gitignored.
 
 ## Required Model Files
 
-Place these files in `gpu/models/`:
+Place these files in `models/`:
 
 - `MDV6-yolov9-c.pt`
 - `cvpr2025_image.pth.tar`
 - `cvpr2025_video.pth.tar`
-- `amt-s.pth` (only needed if AMT interpolation is enabled)
+- `amt-s.pth` if AMT interpolation is enabled
 
 Optional:
 
 - `MDV6-yolov9-c.onnx`
 
-## Manual Setup (No Docker)
+Model bootstrap helper:
 
-### Linux/macOS
+```bash
+python scripts/download_models.py
+```
+
+The download script verifies every model against the SHA256 manifest in [docs/model_checksums.sha256](docs/model_checksums.sha256).
+
+## Quick Start
+
+### 1. Create local working directories
+
+```bash
+mkdir -p data models outputs
+```
+
+On Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force data, models, outputs
+```
+
+### 2. Set up the environment
+
+Linux or macOS:
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-python -m pip install --upgrade pip setuptools==82.0.0 wheel==0.46.3
+python -m pip install --upgrade pip==26.0.1 setuptools==82.0.0 wheel==0.46.3
 pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.10.0+cu126 torchvision==0.25.0+cu126
 pip install -r docker/requirements.gpu.txt
 cd DCVC/src/cpp
@@ -60,12 +170,12 @@ pip install --no-build-isolation .
 cd ../../../..
 ```
 
-### Windows (`cmd.exe`)
+Windows PowerShell:
 
-```cmd
+```powershell
 python -m venv venv
-venv\Scripts\activate.bat
-python -m pip install --upgrade pip setuptools==82.0.0 wheel==0.46.3
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip==26.0.1 setuptools==82.0.0 wheel==0.46.3
 pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.10.0+cu126 torchvision==0.25.0+cu126
 pip install -r docker\requirements.gpu.txt
 cd DCVC\src\cpp
@@ -75,38 +185,32 @@ pip install --no-build-isolation .
 cd ..\..\..\..
 ```
 
-## Manual Run
-
-### Compression
+### 3. Download models
 
 ```bash
-python run_compression.py video.mp4 --config configs/gpu/compression.yaml --output outputs/video.zip
+python scripts/download_models.py
 ```
 
-Output:
+### 4. Run compression
 
-- `outputs/video.zip`
-- Console output is production-style by default; use `--verbose` for detailed diagnostic logs.
+```bash
+python run_compression.py data/tune/video.mp4 --config configs/gpu/compression.yaml --output outputs/video.zip
+```
 
-### Decompression
+### 5. Run decompression
 
 ```bash
 python run_decompression.py outputs/video.zip --config configs/gpu/decompression.yaml --output outputs/video_reconstructed.mp4
 ```
 
-Output:
+## Stage-Wise Sanity Checks
 
-- `outputs/video_reconstructed.mp4`
-- Console output is production-style by default; use `--verbose` for detailed diagnostic logs.
+These scripts are for development sanity checks, not for presenting the entire thesis by themselves.
 
-## Stage-by-Stage Test Scripts
-
-Run these from `gpu/` after environment activation.
-
-### 1) ROI Detection
+### ROI detection
 
 ```bash
-python scripts/test_roi_detection.py --config configs/gpu/compression.yaml --video video.mp4
+python scripts/test_roi_detection.py --config configs/gpu/compression.yaml --video data/tune/video.mp4
 ```
 
 Outputs:
@@ -114,10 +218,10 @@ Outputs:
 - `outputs/sanity_checks/roi_detection/roi_detections.json`
 - `outputs/sanity_checks/roi_detection/roi_overlay.mp4`
 
-### 2) Frame Removal
+### Frame removal
 
 ```bash
-python scripts/test_frame_removal.py --config configs/gpu/compression.yaml --video video.mp4
+python scripts/test_frame_removal.py --config configs/gpu/compression.yaml --video data/tune/video.mp4
 ```
 
 Outputs:
@@ -127,136 +231,75 @@ Outputs:
 - `outputs/sanity_checks/frame_removal/roi_kept_preview.mp4`
 - `outputs/sanity_checks/frame_removal/bg_kept_preview.mp4`
 
-### 3) Compression Sanity + Reproducibility
+### Compression sanity
 
 ```bash
-python scripts/test_compression.py --config configs/gpu/compression.yaml --video video.mp4 --repeat 2
+python scripts/test_compression.py --config configs/gpu/compression.yaml --video data/tune/video.mp4 --repeat 2
 ```
 
-Outputs:
-
-- `outputs/sanity_checks/compression/session_*/summary.json`
-- Per-run archives in the same session folder
-
-### 4) Decompression Sanity + Reproducibility
+### Decompression sanity
 
 ```bash
 python scripts/test_decompression.py outputs/video.zip --config configs/gpu/decompression.yaml --repeat 1
 ```
 
-Outputs:
+See [scripts/README.md](scripts/README.md) for the sanity-check workflow.
 
-- `outputs/sanity_checks/decompression/session_*/summary.json`
-- Per-run reconstructed videos in the same session folder
+## Docker
 
-## Docker Setup
-
-Run these Docker commands from `gpu/`.
-
-### Build Image
-
-Linux/macOS:
+Build:
 
 ```bash
 docker build -f docker/Dockerfile.gpu -t edge-roi-gpu .
 ```
 
-Windows (`cmd.exe`):
-
-```cmd
-docker build -f docker\Dockerfile.gpu -t edge-roi-gpu .
-```
-
-For a clean rebuild with full logs:
-
-```bash
-docker build --no-cache --progress=plain -f docker/Dockerfile.gpu -t edge-roi-gpu .
-```
-
-If you intentionally want the slower PyTorch fallback instead of the CUDA inference extension:
-
-```bash
-docker build -t edge-roi-gpu --build-arg BUILD_INFERENCE_EXT=0 --build-arg REQUIRE_INFERENCE_EXT=0 -f docker/Dockerfile.gpu .
-```
-
-### Run Full Pipeline In Docker
-
-Recommended compose workflow:
+Run the default composed pipeline:
 
 ```bash
 docker compose -f docker/compose.gpu.yaml run --rm pipeline-gpu
 ```
 
-This runs compression and decompression sequentially with the sample paths already wired in:
+This uses the sample paths wired in the compose file:
 
-- input: `data/tune/video.mp4`
-- archive: `outputs/video.zip`
-- reconstruction: `outputs/video_reconstructed.mp4`
+- input video: `data/tune/video.mp4`
+- output archive: `outputs/video.zip`
+- reconstructed video: `outputs/video_reconstructed.mp4`
 
-### Run Compression In Docker
+## Reproducibility Notes
 
-Linux/macOS:
+This repository is best understood as a defended thesis code artifact with runnable pipeline entry points and sanity checks. It is not yet a perfect one-command public benchmark package.
 
-```bash
-mkdir -p outputs
-docker run --rm -it --gpus all \
-  -v "$(pwd)/data:/app/data" \
-  -v "$(pwd)/models:/app/models" \
-  -v "$(pwd)/outputs:/app/outputs" \
-  edge-roi-gpu \
-  python run_compression.py video.mp4 --config configs/gpu/compression.yaml --output /app/outputs/video.zip
-```
+That means:
 
-Windows (`cmd.exe`):
+- large datasets are not bundled
+- model weights are not committed
+- exact experiment splits and released result tables should be documented separately when preparing a public artifact release
+- readers should not confuse the dev sanity scripts with the full thesis evaluation protocol
 
-```cmd
-if not exist outputs mkdir outputs
-docker run --rm -it --gpus all -v "%cd%/data:/app/data" -v "%cd%/models:/app/models" -v "%cd%/outputs:/app/outputs" edge-roi-gpu python run_compression.py video.mp4 --config configs/gpu/compression.yaml --output /app/outputs/video.zip
-```
+Concrete reproducibility anchors in this repo:
 
-Host output:
+- locked dependency file: [docker/requirements.gpu.txt](docker/requirements.gpu.txt)
+- model checksum manifest: [docs/model_checksums.sha256](docs/model_checksums.sha256)
+- validated smoke-test note: [docs/reproducibility_validation.md](docs/reproducibility_validation.md)
 
-- `outputs/video.zip`
+## Limitations And Scope
 
-### Run Decompression In Docker
+This repository does not claim:
 
-Linux/macOS:
+- universal superiority over every baseline on every metric
+- CPU-friendly runtime
+- production-ready deployment on all edge hardware
+- bundled reproduction of the entire thesis dataset
 
-```bash
-docker run --rm -it --gpus all \
-  -v "$(pwd)/models:/app/models" \
-  -v "$(pwd)/outputs:/app/outputs" \
-  edge-roi-gpu \
-  python run_decompression.py /app/outputs/video.zip --config configs/gpu/decompression.yaml --output /app/outputs/video_reconstructed.mp4
-```
+The defended thesis claim is narrower:
 
-Windows (`cmd.exe`):
+an ROI-priority wildlife video pipeline can reduce transmitted size substantially while preserving the animal region better than treating the whole frame uniformly, under practical edge-oriented constraints.
 
-```cmd
-docker run --rm -it --gpus all -v "%cd%/models:/app/models" -v "%cd%/outputs:/app/outputs" edge-roi-gpu python run_decompression.py /app/outputs/video.zip --config configs/gpu/decompression.yaml --output /app/outputs/video_reconstructed.mp4
-```
+## Recommended Next Public-Artifact Improvements
 
-Host output:
+If you are polishing this repo for thesis, portfolio, or PhD use, the next highest-value additions are:
 
-- `outputs/video_reconstructed.mp4`
-
-## Notes
-
-- Runtime is strict GPU-only (no CPU/MPS fallback path).
-- `run_compression.py` and `run_decompression.py` default to the GPU profile configs under `configs/gpu/`; `--config` can still override them explicitly.
-- ROI detection keeps the `.pt` model by default. ONNX is used only when `roi_detection.runtime.prefer_onnx=true`; `prefer_onnx_strict=true` makes missing ONNX support fail fast instead of silently falling back.
-- `run_compression.py` and `run_decompression.py` show short phase progress by default; pass `--verbose` to restore detailed logs.
-- `run_decompression.py` takes the output video path from `--output`; if omitted, it writes next to the archive using a default filename.
-- Docker image installs CUDA PyTorch wheels, but does not bake local models into the image. Mount `models/` at runtime.
-- DCVC extension is installed with:
-  - `pip install --no-build-isolation /app/DCVC/src/cpp`
-- CUDA inference extension build is attempted with:
-  - `pip install --no-build-isolation /app/DCVC/src/layers/extensions/inference`
-  - By default, image build fails if this extension cannot be built or imported.
-  - To allow PyTorch-kernel fallback intentionally, set `BUILD_INFERENCE_EXT=0` and `REQUIRE_INFERENCE_EXT=0`.
-- If you still see `cannot import cuda implementation for inference, fallback to pytorch.`, rebuild with no cache:
-  - `docker build --no-cache --progress=plain -t edge-roi-gpu .`
-- The Dockerfile pins CUDA host compiler to `gcc-12/g++-12` for better nvcc compatibility.
-- To verify the CUDA inference extension is importable in the built image:
-  - `docker run --rm --gpus all edge-roi-gpu python -c "import inference_extensions_cuda; print('inference_extensions_cuda: OK')"`
-- `docker/compose.gpu.yaml` exposes a default `pipeline-gpu` service for the end-to-end path. The per-stage `compression-gpu` and `decompression-gpu` services are left under the `stage-tools` profile for manual debugging only.
+1. a clean thesis summary PDF linked from the repo
+2. a short thesis artifact note that explains the held-out test split and locked released configuration
+3. a release tag with fixed model artifacts
+4. a citation file once the final thesis bibliographic metadata is locked
