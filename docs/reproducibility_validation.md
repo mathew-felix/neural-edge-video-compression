@@ -1,12 +1,6 @@
 # Reproducibility Validation
 
-This note records the concrete environment and hashes from a successful Windows smoke test of the repository.
-
-It is meant to support a narrow, honest claim:
-
-the repository is runnable and reproducible as a code artifact on the validated environment below.
-
-It is not a claim that the full defended thesis evaluation has been repackaged as a one-command public benchmark.
+This file records the environment and hashes from a successful Windows smoke test of the repository.
 
 ## Validated Environment
 
@@ -19,19 +13,17 @@ It is not a claim that the full defended thesis evaluation has been repackaged a
 - GPU: `NVIDIA GeForce RTX 3070 Ti Laptop GPU`
 - ffmpeg: `8.0-full_build-www.gyan.dev`
 
-Dependency lock file:
+Dependency file:
 
 - [docker/requirements.gpu.txt](../docker/requirements.gpu.txt)
 
-Model checksum manifest:
+Model checksum file:
 
 - [docs/model_checksums.sha256](model_checksums.sha256)
 
 ## Validated Procedure
 
-The validation run was executed through a local one-off smoke-test driver that called the same tracked repo commands listed below. The helper script itself is not part of the committed artifact.
-
-Validated command sequence:
+The validation run executed the following command sequence:
 
 ```cmd
 python -m venv venv
@@ -45,7 +37,7 @@ python run_compression.py test_video.mp4 --config configs\gpu\compression.yaml -
 python scripts\test_decompression.py outputs\windows_smoke\test_video.zip --config configs\gpu\decompression.yaml --out-dir outputs\windows_smoke\decompression --repeat 1 --max-frames 120
 ```
 
-## What The Smoke Test Covered
+## Smoke-Test Coverage
 
 - virtual environment creation
 - pinned Python dependency installation
@@ -58,7 +50,7 @@ python scripts\test_decompression.py outputs\windows_smoke\test_video.zip --conf
 - end-to-end compression
 - decompression reproducibility check
 
-## Validated Inputs And Outputs
+## Recorded Inputs And Outputs
 
 Input video:
 
@@ -98,16 +90,16 @@ Decompression output:
 - output geometry: `1280x720 @ 30.0 fps`
 - reproducibility result: `PASS`
 
-## Scope Boundary
+## Scope
 
-This validation is enough to support:
+This validation supports the following statements:
 
 - the repository setup works from scratch on the validated machine
 - the main pipeline entry points execute successfully
 - the decompression path is deterministic on the smoke-test sample
 
-This validation does not, by itself, prove:
+This validation does not prove:
 
-- reproduction of the full 20-video defended-thesis benchmark
-- cross-machine reproducibility on every GPU, driver, or OS variant
-- long-term immunity to external package or model-host changes beyond the locked versions and checksums recorded here
+- reproduction of the full 20-video thesis benchmark
+- cross-machine reproducibility on every GPU, driver, or operating system variant
+- long-term immunity to package or model-host changes beyond the locked versions and checksums recorded here

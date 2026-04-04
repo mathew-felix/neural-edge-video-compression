@@ -271,7 +271,7 @@ def main() -> None:
     make_runtime_panel(fig, grid[1, 1])
 
     fig.suptitle(
-        "GitHub Summary Figure: Neural ROI-Aware Video Compression for Wildlife Monitoring",
+        "Summary Figure: Neural ROI-Aware Video Compression for Wildlife Monitoring",
         fontsize=18,
         fontweight="bold",
         y=0.98,
@@ -280,7 +280,7 @@ def main() -> None:
     fig.text(
         0.5,
         0.945,
-        "Defended thesis metrics on the held-out test set. LPIPS is intentionally omitted from the GitHub-facing summary figure.",
+        "Held-out test-set metrics from the thesis. LPIPS plots are not included in this figure.",
         ha="center",
         va="center",
         fontsize=11,

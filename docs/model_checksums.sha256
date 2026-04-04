@@ -1,4 +1,4 @@
-# SHA256 checksums for released model artifacts validated on 2026-04-04.
+# SHA256 checksums for model files validated on 2026-04-04.
 # Format: <sha256>  <relative path>
 
 8e259cf07c3adfd53555bbb0a73221d24f4a08735a40f8375a6b6ac10fac8cf6  models/amt-l.pth
