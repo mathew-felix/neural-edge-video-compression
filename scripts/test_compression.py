@@ -84,9 +84,9 @@ def _read_archive_metrics(archive_path: Path) -> Dict[str, Any]:
     return {
         "archive_path": str(archive_path),
         "zip_size_bytes": int(archive_path.stat().st_size),
-        "roi_bytes": int(len(payload["roi.bin"])),
-        "bg_bytes": int(len(payload["bg.bin"])),
-        "payload_bytes": int(len(payload["roi.bin"]) + len(payload["bg.bin"])),
+        "roi_bytes": int(len(payload["roi.stream"])),
+        "bg_bytes": int(len(payload["bg.stream"])),
+        "payload_bytes": int(len(payload["roi.stream"]) + len(payload["bg.stream"])),
         "roi_frames_with_boxes": int(len((roi_json.get("frames", {}) or {}))),
         "roi_kept_frames": int(len(roi_kept)),
         "roi_dropped_frames": int(len(roi_dropped)),
@@ -94,8 +94,8 @@ def _read_archive_metrics(archive_path: Path) -> Dict[str, Any]:
         "bg_dropped_frames": int(len(bg_dropped)),
         "roi_stream_frames_encoded": int(roi_stream.get("frames_encoded", 0) or 0),
         "bg_stream_frames_encoded": int(bg_stream.get("frames_encoded", 0) or 0),
-        "roi_bin_sha256": sha256_bytes(payload["roi.bin"]),
-        "bg_bin_sha256": sha256_bytes(payload["bg.bin"]),
+        "roi_bin_sha256": sha256_bytes(payload["roi.stream"]),
+        "bg_bin_sha256": sha256_bytes(payload["bg.stream"]),
         "roi_json_sha256": sha256_json(roi_json),
         "frame_drop_sha256": sha256_json(frame_drop_json),
         "roi_frame_index_map_sha256": sha256_json(list(roi_stream.get("frame_index_map", []) or [])),
@@ -104,8 +104,7 @@ def _read_archive_metrics(archive_path: Path) -> Dict[str, Any]:
         "roi_model_path_selected": str(model_selection.get("selected_model_path", "")),
         "roi_model_prefer_onnx": bool(model_selection.get("prefer_onnx", False)),
         "roi_model_prefer_onnx_strict": bool(model_selection.get("prefer_onnx_strict", False)),
-        "dcvc_device_selected": str(runtime_meta.get("dcvc_device_selected", "")),
-        "dcvc_cuda_idx_selected": runtime_meta.get("dcvc_cuda_idx_selected", None),
+        "compression_backend": str(runtime_meta.get("compression_backend", "")),
         "meta_size_reported": meta.get("sizes", {}),
     }
 
@@ -135,9 +134,9 @@ def _run_compression_once(
     out_cfg["out_dir"] = str(run_dir)
     out_cfg["roi_json"] = "roi_detections.json"
     out_cfg["frame_drop_json"] = "frame_drop.json"
-    out_cfg["roi_bin"] = "roi.bin"
-    out_cfg["bg_bin"] = "bg.bin"
-    out_cfg["dcvc_meta"] = "meta.json"
+    out_cfg["roi_stream"] = "roi.ivf"
+    out_cfg["bg_stream"] = "bg.ivf"
+    out_cfg["meta_json"] = "meta.json"
 
     runtime_cfg_path = run_dir / "compression_config.runtime.yaml"
     write_yaml(runtime_cfg_path, runtime_cfg)
@@ -208,8 +207,7 @@ def _check_reproducibility(run_summaries: List[Dict[str, Any]]) -> List[str]:
         "roi_model_path_selected",
         "roi_model_prefer_onnx",
         "roi_model_prefer_onnx_strict",
-        "dcvc_device_selected",
-        "dcvc_cuda_idx_selected",
+        "compression_backend",
     ]
     baseline = run_summaries[0]
     issues: List[str] = []
@@ -312,7 +310,7 @@ def main() -> None:
         print(
             f"  run_{run['run_index']:02d} runtime   : "
             f"roi_model={run['roi_model_format_selected']} "
-            f"dcvc={run['dcvc_device_selected']}"
+            f"codec={run['compression_backend']}"
         )
     if size_issues:
         print("  size_check            : FAILED (allowed by --allow-larger)")

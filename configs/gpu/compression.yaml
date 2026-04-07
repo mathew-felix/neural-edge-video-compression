@@ -4,7 +4,7 @@ roi_detection:
     animal_model_path: "models/MDV6-yolov9-c.pt"
     animal_model_path_onnx: "models/MDV6-yolov9-c.onnx"
   runtime:
-    device: "cuda:0"
+    device: "cpu"
     # Keep detector backend explicit for reproducible experiments.
     prefer_onnx: false
     prefer_onnx_strict: false
@@ -55,27 +55,73 @@ frame_removal:
     bg_idle_interval: 10
 
 compression:
-  # Low-memory mode streams ROI/BG frames into the DCVC encoder instead of
-  # caching all kept full-resolution frames in RAM (reduces peak CPU RAM).
   low_memory: true
-  dcvc:
-    repo_dir: "DCVC"
-    model_i: "models/cvpr2025_image.pth.tar"
-    model_p: "models/cvpr2025_video.pth.tar"
-    device: "cuda"
-    use_cuda: true
-    cuda_idx: 0
-    reset_interval: 32
-    intra_period: -1
-    force_zero_thres: null
+  codec:
+    # AV1-only pipeline:
+    # ROI stream -> AV1 in roi.ivf
+    # BG stream  -> AV1 in bg.ivf
+    #
+    # Other codecs are intentionally unsupported in this configuration.
+    backend: "av1"
+    # ffmpeg executable used for encoding the ROI and BG streams.
+    ffmpeg_bin: "ffmpeg"
+    # AV1 encoder choice:
+    #   auto       -> prefer libsvtav1, fall back to libaom-av1
+    #   libsvtav1  -> use SVT-AV1 explicitly
+    #   libaom-av1 -> use libaom explicitly
+    #
+    # Jetson note:
+    #   many Jetson ffmpeg builds have libaom-av1 but not libsvtav1.
+    av1_encoder: "auto"
+    # AV1 preset for libsvtav1.
+    # Common range: "0" to "13"
+    # lower = slower / better quality
+    # higher = faster / lower quality
+    preset: "8"
+    # libaom-av1 tuning knobs used when av1_encoder resolves to libaom-av1.
+    # cpu_used:
+    #   higher = faster / worse quality efficiency
+    # row_mt:
+    #   "1" enables row-based threading
+    # tiles:
+    #   tile layout, for example "2x1"
+    cpu_used: "8"
+    row_mt: "1"
+    tiles: "2x1"
+    # GOP / keyframe interval for both streams.
+    gop: 32
+    # Pixel format used for encoded streams.
+    pix_fmt: "yuv420p"
   roi:
     min_conf: 0.0
     dilate_px: 0
+    # Extra padding, in pixels, added around each ROI detection before
+    # cropping/encoding the ROI region. Increase this if placement looks tight
+    # or ROI patch edges are too close to the subject.
+    crop_margin_px: 40
+    # Margin used when removing ROI from background keep frames. Keep this
+    # aligned with crop_margin_px for the default background-model path that
+    # tested best overall in this repo.
+    bg_remove_margin_px: 40
+    # Fallback inpaint radius if temporal/model BG fill cannot supply a patch.
+    bg_inpaint_radius: 5
+    # Nearby-frame search used only as a fallback when the background model
+    # alone is not enough.
+    bg_fill_search_radius: 60
+    bg_fill_max_iou: 0.05
+    bg_fill_min_donors: 4
+    bg_fill_max_donors: 8
+    # Number of BG keep frames sampled to build the static background model.
+    bg_model_max_samples: 24
+    # Feather width for blending the background-model patch back into the
+    # original frame.
+    bg_fill_feather_px: 10
   quality:
-    roi_qp_i: 63
-    roi_qp_p: 63
-    bg_qp_i: 25
-    bg_qp_p: 25
+    # Independent QP values for the two transmitted streams.
+    # Lower QP = higher quality / larger size.
+    # Higher QP = lower quality / smaller size.
+    roi_qp: 18
+    bg_qp: 35
 
 output:
   write_outputs: true

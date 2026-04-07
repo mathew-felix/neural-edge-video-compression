@@ -24,8 +24,10 @@ ARCHIVE_REQUIRED_ENTRIES = (
     "meta.json",
     "roi_detections.json",
     "frame_drop.json",
-    "roi.bin",
-    "bg.bin",
+    "roi.stream",
+    "bg.stream",
+)
+ARCHIVE_OPTIONAL_ENTRIES = (
 )
 
 
@@ -84,18 +86,16 @@ def _validate_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     interp.setdefault("model", "amt-s")
     interp.setdefault("weights_path", None)
     interp.setdefault("repo_dir", "_third_party_amt")
-    interp.setdefault("device", "cuda")
+    interp.setdefault("device", "auto")
     interp.setdefault("fp16", True)
     interp.setdefault("pad_to", 16)
     interp.setdefault("batch_size", 1)
     interp.setdefault("crop_margin", 8)
     interp.setdefault("max_crop_side", 768)
-    interp_dev = str(interp.get("device", "cuda")).strip().lower()
-    if interp_dev in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids decompression.interpolate.device set to CPU/MPS.")
-    if interp_dev not in {"", "auto", "cuda"} and not interp_dev.startswith("cuda:"):
+    interp_dev = str(interp.get("device", "auto")).strip().lower()
+    if interp_dev not in {"", "auto", "cpu", "mps", "cuda"} and not interp_dev.startswith("cuda:"):
         raise ValueError(
-            "decompression.interpolate.device must be one of: auto, cuda, cuda:<index> for strict GPU runtime."
+            "decompression.interpolate.device must be one of: auto, cpu, mps, cuda, cuda:<index>."
         )
     try:
         interp_batch_size = int(interp.get("batch_size", 1))
@@ -127,15 +127,12 @@ def _validate_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("decompression.roi_blend_edge_px must be >= 0")
     out["roi_blend_edge_px"] = int(roi_blend_edge_px)
 
-    dcvc = out.get("dcvc", {}) or {}
-    if not isinstance(dcvc, dict):
-        dcvc = {}
-    if "use_cuda" in dcvc and _coerce_bool(dcvc.get("use_cuda"), default=True) is False:
-        raise ValueError("Strict GPU runtime forbids decompression.dcvc.use_cuda=false.")
-    dcvc_dev = str(dcvc.get("device", "cuda")).strip().lower()
-    if dcvc_dev in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids decompression.dcvc.device set to CPU/MPS.")
-    out["dcvc"] = dcvc
+    codec_cfg = out.get("codec_runtime", {}) or {}
+    if not isinstance(codec_cfg, dict):
+        codec_cfg = {}
+    if "ffmpeg_bin" in codec_cfg and not isinstance(codec_cfg["ffmpeg_bin"], str):
+        raise ValueError("decompression.codec_runtime.ffmpeg_bin must be a string")
+    out["codec_runtime"] = codec_cfg
     return out
 
 
@@ -170,6 +167,20 @@ def _load_archive_payloads(archive_path: Path) -> Dict[str, bytes]:
                 raise FileNotFoundError(f"Missing archive entries: {manifest_missing}")
         for canonical_name in ARCHIVE_REQUIRED_ENTRIES:
             out[canonical_name] = zf.read(entry_map[canonical_name])
+        manifest_entries = {}
+        if ARCHIVE_MANIFEST_NAME in names:
+            try:
+                manifest_entries = json.loads(zf.read(ARCHIVE_MANIFEST_NAME).decode("utf-8")).get("entries", {}) or {}
+            except Exception:
+                manifest_entries = {}
+        for canonical_name in ARCHIVE_OPTIONAL_ENTRIES:
+            actual_name = None
+            if isinstance(manifest_entries, dict):
+                actual_name = manifest_entries.get(canonical_name, None)
+            if not isinstance(actual_name, str) or not actual_name.strip():
+                actual_name = canonical_name if canonical_name in names else None
+            if isinstance(actual_name, str) and actual_name in names:
+                out[canonical_name] = zf.read(actual_name)
     return out
 
 

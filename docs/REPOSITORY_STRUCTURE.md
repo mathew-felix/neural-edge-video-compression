@@ -14,7 +14,6 @@ neural-edge-video-compression/
 |-- scripts/
 |-- tests/
 |-- docker/
-|-- DCVC/
 |-- _third_party_amt/
 |-- data/      # local, gitignored except .gitkeep
 |-- models/    # local, gitignored except .gitkeep
@@ -67,10 +66,6 @@ Automated checks for config handling, stage logic, runtime contracts, archive st
 ### `docker/`
 
 Containerized GPU runtime path.
-
-### `DCVC/`
-
-Vendored compression dependency.
 
 ### `_third_party_amt/`
 

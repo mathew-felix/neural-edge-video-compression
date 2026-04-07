@@ -34,13 +34,27 @@ def _build_network_cfg(variant: str) -> Dict[str, Any]:
 
 def _resolve_device(device: str) -> torch.device:
     d = str(device).strip().lower()
-    if d in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids AMT interpolation device=cpu/mps.")
-    if d not in {"", "auto", "cuda"} and not d.startswith("cuda:"):
-        raise ValueError("AMT interpolation device must be one of: auto, cuda, cuda:<index> for strict GPU runtime.")
+    if d not in {"", "auto", "cpu", "mps", "cuda"} and not d.startswith("cuda:"):
+        raise ValueError("AMT interpolation device must be one of: auto, cpu, mps, cuda, cuda:<index>.")
+    if d in {"", "auto"}:
+        if torch.cuda.is_available():
+            selected_idx = 0
+            torch.cuda.set_device(int(selected_idx))
+            return torch.device(f"cuda:{int(selected_idx)}")
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and bool(mps_backend.is_available()):
+            return torch.device("mps")
+        return torch.device("cpu")
+    if d == "cpu":
+        return torch.device("cpu")
+    if d == "mps":
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is None or not bool(mps_backend.is_available()):
+            raise RuntimeError("AMT interpolation device=mps requested, but MPS is unavailable.")
+        return torch.device("mps")
     if not torch.cuda.is_available():
-        raise RuntimeError("Strict GPU runtime requires CUDA for AMT interpolation.")
-    if d in {"", "auto", "cuda"}:
+        raise RuntimeError("AMT interpolation requested CUDA, but torch.cuda.is_available() is false.")
+    if d == "cuda":
         selected_idx = 0
     else:
         idx = d.split(":", 1)[1].strip()

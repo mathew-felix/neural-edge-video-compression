@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 # Lazy-loaded runtime components so module import stays lightweight for tests/tools.
-compress_keep_streams_dcvc: Optional[Callable[..., Dict[str, Any]]] = None
+compress_keep_streams: Optional[Callable[..., Dict[str, Any]]] = None
 apply_dual_timeline_policy: Optional[Callable[..., Dict[str, Any]]] = None
 build_dual_timeline_metadata: Optional[Callable[..., Dict[str, Any]]] = None
 remove_redundant_frames: Optional[Callable[..., Dict[str, Any]]] = None
@@ -84,7 +84,7 @@ def _configure_runtime_logging(verbose: bool) -> None:
 
 
 def _load_runtime_components() -> None:
-    global compress_keep_streams_dcvc
+    global compress_keep_streams
     global apply_dual_timeline_policy
     global build_dual_timeline_metadata
     global remove_redundant_frames
@@ -93,11 +93,11 @@ def _load_runtime_components() -> None:
     global validate_pipeline_config
     global run_roi_detection
 
-    if compress_keep_streams_dcvc is None:
+    if compress_keep_streams is None:
         try:
-            from compression import compress_keep_streams_dcvc as _compress_keep_streams_dcvc
+            from compression import compress_keep_streams as _compress_keep_streams
 
-            compress_keep_streams_dcvc = _compress_keep_streams_dcvc
+            compress_keep_streams = _compress_keep_streams
         except Exception:
             pass
 
@@ -243,8 +243,9 @@ def _select_roi_model_for_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
     Select the ROI detector backend deterministically from config.
 
     Default behavior is to keep the configured `animal_model_path`. ONNX is only
-    selected when `roi_detection.runtime.prefer_onnx=true`. If
-    `prefer_onnx_strict=true`, the run fails instead of silently falling back.
+    selected when `roi_detection.runtime.prefer_onnx=true`. If no ONNX Runtime
+    provider is available, the pipeline falls back to the default model unless
+    `prefer_onnx_strict=true`.
 
     Config keys (roi_detection):
       paths.animal_model_path         -> default/fallback model path
@@ -268,15 +269,15 @@ def _select_roi_model_for_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
     selected_format = "default"
     selected_model = default_model
     fallback_reason = None
-    onnx_gpu_runtime_ready = False
+    onnx_runtime_ready = False
     onnx_runtime_status: Optional[str] = None
 
     if prefer_onnx:
         if onnx_model:
             onnx_exists = _resolve_config_path(str(onnx_model)).exists()
             if onnx_exists:
-                onnx_gpu_runtime_ready, onnx_runtime_status = _detect_onnx_gpu_provider()
-                if onnx_gpu_runtime_ready:
+                onnx_runtime_ready, onnx_runtime_status = _detect_onnx_gpu_provider()
+                if onnx_runtime_ready:
                     selected_model = onnx_model
                     selected_format = "onnx"
                 elif prefer_onnx_strict:
@@ -310,7 +311,7 @@ def _select_roi_model_for_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "selected_format": selected_format,
         "selected_model_path": str(selected_model) if selected_model else None,
         "onnx_model_path": (str(onnx_model) if onnx_model else None),
-        "onnx_gpu_runtime_ready": bool(onnx_gpu_runtime_ready) if onnx_model else None,
+        "onnx_runtime_ready": bool(onnx_runtime_ready) if onnx_model else None,
         "onnx_runtime_status": onnx_runtime_status,
         "prefer_onnx": bool(prefer_onnx),
         "prefer_onnx_strict": bool(prefer_onnx_strict),
@@ -426,33 +427,54 @@ def _apply_dual_timeline_policy(frame_result: Dict[str, Any], frame_cfg: Dict[st
     return frame_result
 
 
-def _require_cuda_runtime() -> None:
-    if not _cuda_is_available():
-        raise RuntimeError("Strict GPU runtime requires CUDA, but torch.cuda.is_available() is false.")
-
-
 def _pick_best_device_for_roi(raw_device: Any) -> Tuple[Any, str]:
-    _require_cuda_runtime()
+    mps_available = False
+    if torch is not None:
+        try:
+            mps_backend = getattr(torch.backends, "mps", None)
+            if mps_backend is not None:
+                mps_available = bool(mps_backend.is_available())
+        except Exception:
+            mps_available = False
+
     if isinstance(raw_device, int):
         if int(raw_device) < 0:
-            raise ValueError("roi_detection.runtime.device CUDA index must be >= 0 for strict GPU runtime.")
+            raise ValueError("roi_detection.runtime.device CUDA index must be >= 0.")
+        if not _cuda_is_available():
+            raise ValueError("roi_detection.runtime.device requested a CUDA index, but CUDA is unavailable.")
         return int(raw_device), "cuda"
 
     s = str(raw_device).strip().lower()
-    if not s or s in {"auto", "cuda"}:
+    if not s or s == "auto":
+        if _cuda_is_available():
+            return 0, "cuda"
+        if mps_available:
+            return "mps", "mps"
+        return "cpu", "cpu"
+    if s == "cuda":
+        if not _cuda_is_available():
+            raise ValueError("roi_detection.runtime.device=cuda requested, but CUDA is unavailable.")
         return 0, "cuda"
     if s.startswith("cuda:"):
         idx = s.split(":", 1)[1].strip()
         if idx.isdigit():
+            if not _cuda_is_available():
+                raise ValueError("roi_detection.runtime.device requested CUDA, but CUDA is unavailable.")
             return int(idx), "cuda"
         raise ValueError("roi_detection.runtime.device must be cuda:<index> when using explicit CUDA index.")
     if s.isdigit():
+        if not _cuda_is_available():
+            raise ValueError("roi_detection.runtime.device requested CUDA, but CUDA is unavailable.")
         return int(s), "cuda"
-    if s in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids roi_detection.runtime.device set to CPU/MPS.")
+    if s == "mps":
+        if not mps_available:
+            raise ValueError("roi_detection.runtime.device=mps requested, but MPS is unavailable.")
+        return "mps", "mps"
+    if s == "cpu":
+        return "cpu", "cpu"
     raise ValueError(
-        "Invalid roi_detection.runtime.device for strict GPU runtime. "
-        "Use auto, cuda, cuda:<index>, or integer GPU index."
+        "Invalid roi_detection.runtime.device. "
+        "Use auto, cpu, mps, cuda, cuda:<index>, or integer GPU index."
     )
 
 
@@ -467,94 +489,15 @@ def _parse_cuda_index(raw: Any) -> Optional[int]:
     return None
 
 
-def _parse_use_cuda_compat(raw: Any) -> bool:
-    if isinstance(raw, bool):
-        return bool(raw)
-    s = str(raw).strip().lower()
-    if s in {"1", "true", "yes", "cuda"}:
-        return True
-    if s in {"0", "false", "no", "cpu"}:
-        return False
-    if s == "auto":
-        return _cuda_is_available()
-    return bool(raw)
-
-
-def _pick_dcvc_device(raw_device: Any, raw_use_cuda: Any, raw_cuda_idx: Any) -> Tuple[str, str, bool, Optional[int], bool]:
-    _require_cuda_runtime()
-    req_idx = _parse_cuda_index(raw_cuda_idx)
-
-    if raw_device is None:
-        use_cuda_req = _parse_use_cuda_compat(raw_use_cuda)
-        req_label = "cuda" if use_cuda_req else "cpu"
-    elif isinstance(raw_device, int):
-        req_label = "cuda"
-        req_idx = int(raw_device) if int(raw_device) >= 0 else req_idx
-        use_cuda_req = True
-    else:
-        s = str(raw_device).strip().lower()
-        if not s or s == "auto":
-            req_label = "auto"
-        elif s == "cpu":
-            req_label = "cpu"
-        elif s == "mps":
-            raise ValueError("Strict GPU runtime forbids compression.dcvc.device set to MPS.")
-        elif s == "cuda":
-            req_label = "cuda"
-        elif s.startswith("cuda:"):
-            idx = s.split(":", 1)[1].strip()
-            if idx.isdigit():
-                req_idx = int(idx)
-                req_label = "cuda"
-            else:
-                raise ValueError("compression.dcvc.device must be cuda:<index> when using explicit CUDA index.")
-        elif s.isdigit():
-            req_idx = int(s)
-            req_label = "cuda"
-        else:
-            raise ValueError(
-                "Invalid compression.dcvc.device for strict GPU runtime. "
-                "Use auto, cuda, cuda:<index>, or integer GPU index."
-            )
-        use_cuda_req = req_label != "cpu"
-
-    if req_label == "cpu":
-        raise ValueError("Strict GPU runtime forbids compression.dcvc.device=cpu or use_cuda=false.")
-    return req_label, "cuda", True, (req_idx if req_idx is not None else 0), bool(use_cuda_req)
-
-
 def _apply_runtime_device_fallbacks(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    _require_cuda_runtime()
     report: Dict[str, Any] = {
-        "cuda_available": True,
-        "runtime_mode": "strict_gpu_only",
+        "cuda_available": bool(_cuda_is_available()),
+        "runtime_mode": "best_available",
     }
 
     roi_cfg = cfg.get("roi_detection", {}) or {}
     roi_rt = roi_cfg.get("runtime", {}) or {}
     roi_enable = bool(roi_cfg.get("enable", True))
-
-    comp_cfg = cfg.get("compression", {}) or {}
-    dcvc_cfg = comp_cfg.get("dcvc", {}) or {}
-    req_label, sel_label, dcvc_use_cuda_sel, dcvc_cuda_idx_sel, dcvc_use_cuda_req = _pick_dcvc_device(
-        dcvc_cfg.get("device", None),
-        dcvc_cfg.get("use_cuda", True),
-        dcvc_cfg.get("cuda_idx", None),
-    )
-    dcvc_device_selected = str(sel_label)
-    if dcvc_use_cuda_sel and dcvc_cuda_idx_sel is not None:
-        dcvc_device_selected = f"cuda:{int(dcvc_cuda_idx_sel)}"
-    dcvc_cfg["device"] = dcvc_device_selected
-    dcvc_cfg["use_cuda"] = bool(dcvc_use_cuda_sel)
-    dcvc_cfg["cuda_idx"] = dcvc_cuda_idx_sel if dcvc_use_cuda_sel else None
-    comp_cfg["dcvc"] = dcvc_cfg
-    cfg["compression"] = comp_cfg
-
-    report["dcvc_device_requested"] = str(req_label)
-    report["dcvc_device_selected"] = str(dcvc_device_selected)
-    report["dcvc_use_cuda_requested"] = bool(dcvc_use_cuda_req)
-    report["dcvc_use_cuda_selected"] = bool(dcvc_use_cuda_sel)
-    report["dcvc_cuda_idx_selected"] = dcvc_cuda_idx_sel if dcvc_use_cuda_sel else None
 
     if roi_enable:
         requested = roi_rt.get("device", "auto")
@@ -605,6 +548,13 @@ def _resolve_archive_output_path(
     return out_dir / zip_name
 
 
+def _stream_extension_for_backend(backend: Any) -> str:
+    b = str(backend).strip().lower()
+    if b == "av1":
+        return ".ivf"
+    raise ValueError(f"Unsupported stream backend: {backend}. AV1 is the only supported codec.")
+
+
 def main() -> None:
     args = _parse_args()
     _setup_logging(args.verbose)
@@ -615,7 +565,7 @@ def main() -> None:
     if (
         validate_pipeline_config is None
         or remove_redundant_frames is None
-        or compress_keep_streams_dcvc is None
+        or compress_keep_streams is None
     ):
         raise RuntimeError("Failed to load one or more runtime pipeline components")
 
@@ -662,7 +612,7 @@ def main() -> None:
 
     _status("Encoding ROI and background streams...")
     comp_cfg = cfg.get("compression", {}) or {}
-    compression_result = compress_keep_streams_dcvc(
+    compression_result = compress_keep_streams(
         source_video_path=video_path,
         roi_bbox_map=roi_frames,
         frame_drop_result=frame_result,
@@ -681,8 +631,7 @@ def main() -> None:
         },
     }
     compression_meta["runtime"] = {
-        "dcvc_device_selected": runtime_device.get("dcvc_device_selected", None),
-        "dcvc_cuda_idx_selected": runtime_device.get("dcvc_cuda_idx_selected", None),
+        "compression_backend": ((compression_meta.get("compression", {}) or {}).get("backend", None)),
         "runtime_mode": runtime_device.get("runtime_mode", None),
     }
     compression_meta["provenance"] = _collect_runtime_provenance(cfg_path, video_path)
@@ -691,8 +640,8 @@ def main() -> None:
     _log(
         "phase4.complete",
         run_id=run_id,
-        roi_bytes=int(len(compression_result.get("roi_bin_bytes", b""))),
-        bg_bytes=int(len(compression_result.get("bg_bin_bytes", b""))),
+        roi_bytes=int(len(compression_result.get("roi_stream_bytes", b""))),
+        bg_bytes=int(len(compression_result.get("bg_stream_bytes", b""))),
     )
 
     out_cfg = cfg.get("output", {}) or {}
@@ -709,19 +658,24 @@ def main() -> None:
         out_cfg=out_cfg,
         output_override=args.output,
     )
+    streams_meta = compression_result.get("meta", {}).get("streams", {}) or {}
+    roi_codec = str((streams_meta.get("roi", {}) or {}).get("codec", "av1"))
+    bg_codec = str((streams_meta.get("bg", {}) or {}).get("codec", "av1"))
+    roi_entry_name = str(out_cfg.get("roi_stream", f"roi{_stream_extension_for_backend(roi_codec)}"))
+    bg_entry_name = str(out_cfg.get("bg_stream", f"bg{_stream_extension_for_backend(bg_codec)}"))
     archive_entries = {
         "roi_detections.json": str(out_cfg.get("roi_json", "roi_detections.json")),
         "frame_drop.json": str(out_cfg.get("frame_drop_json", "frame_drop.json")),
-        "roi.bin": str(out_cfg.get("roi_bin", "roi.bin")),
-        "bg.bin": str(out_cfg.get("bg_bin", "bg.bin")),
-        "meta.json": str(out_cfg.get("dcvc_meta", "meta.json")),
+        "roi.stream": roi_entry_name,
+        "bg.stream": bg_entry_name,
+        "meta.json": str(out_cfg.get("meta_json", "meta.json")),
     }
     runtime_cfg_bytes = json.dumps(cfg, indent=2, sort_keys=True).encode("utf-8")
     archive_payloads = {
         archive_entries["roi_detections.json"]: json.dumps(roi_result, indent=2).encode("utf-8"),
         archive_entries["frame_drop.json"]: json.dumps(frame_result, indent=2).encode("utf-8"),
-        archive_entries["roi.bin"]: bytes(compression_result["roi_bin_bytes"]),
-        archive_entries["bg.bin"]: bytes(compression_result["bg_bin_bytes"]),
+        archive_entries["roi.stream"]: bytes(compression_result["roi_stream_bytes"]),
+        archive_entries["bg.stream"]: bytes(compression_result["bg_stream_bytes"]),
         archive_entries["meta.json"]: json.dumps(compression_result["meta"], indent=2).encode("utf-8"),
         RUNTIME_CONFIG_ENTRY_NAME: runtime_cfg_bytes,
         ARCHIVE_MANIFEST_NAME: json.dumps(

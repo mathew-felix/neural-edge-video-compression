@@ -16,8 +16,8 @@ ARCHIVE_REQUIRED_ENTRIES = (
     "meta.json",
     "roi_detections.json",
     "frame_drop.json",
-    "roi.bin",
-    "bg.bin",
+    "roi.stream",
+    "bg.stream",
 )
 
 
@@ -138,4 +138,3 @@ def human_bytes(size_bytes: int) -> str:
         size /= 1024.0
         idx += 1
     return f"{size:.2f} {units[idx]}"
-

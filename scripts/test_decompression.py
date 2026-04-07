@@ -298,7 +298,7 @@ def _effective_decompression_runtime(
     return {
         "runtime_device": runtime_device,
         "decompression": dec_cfg,
-        "archive_dcvc": meta_copy.get("dcvc", {}),
+        "archive_compression": meta_copy.get("compression", {}),
         "requested_overrides": {
             "max_frames": int(max_frames),
             "no_interpolate": bool(no_interpolate),
@@ -444,4 +444,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

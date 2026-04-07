@@ -29,23 +29,17 @@ class TestRunOutputContract(unittest.TestCase):
             tmp = Path(td)
             video_path = tmp / "video.mp4"
             yolo_model = tmp / "yolo.pt"
-            model_i = tmp / "i.pth.tar"
-            model_p = tmp / "p.pth.tar"
-            dcvc_dir = tmp / "DCVC"
 
             video_path.write_bytes(b"v")
             yolo_model.write_bytes(b"m")
-            model_i.write_bytes(b"i")
-            model_p.write_bytes(b"p")
-            dcvc_dir.mkdir(parents=True, exist_ok=True)
 
             cfg = {
                 "input": {"video_path": str(video_path)},
                 "roi_detection": {"enable": False, "paths": {"animal_model_path": str(yolo_model)}},
                 "frame_removal": {"params": {"motion": {"t_low": 1.0, "t_high": 2.0}}},
                 "compression": {
-                    "dcvc": {"repo_dir": str(dcvc_dir), "model_i": str(model_i), "model_p": str(model_p), "use_cuda": True, "reset_interval": 1},
-                    "quality": {"roi_qp_i": 1, "roi_qp_p": 1, "bg_qp_i": 1, "bg_qp_p": 1},
+                    "codec": {"backend": "av1", "ffmpeg_bin": "ffmpeg", "preset": "8", "gop": 8},
+                    "quality": {"roi_qp": 18, "bg_qp": 35},
                     "roi": {"min_conf": 0.25},
                 },
                 "output": {
@@ -53,9 +47,9 @@ class TestRunOutputContract(unittest.TestCase):
                     "out_dir": out_dir_rel,
                     "roi_json": "roi_detections.json",
                     "frame_drop_json": "frame_drop.json",
-                    "roi_bin": "roi.bin",
-                    "bg_bin": "bg.bin",
-                    "dcvc_meta": "meta.json",
+                    "roi_stream": "roi.ivf",
+                    "bg_stream": "bg.ivf",
+                    "meta_json": "meta.json",
                 },
             }
             cfg_path = tmp / "cfg.yaml"
@@ -67,11 +61,15 @@ class TestRunOutputContract(unittest.TestCase):
                 "per_frame": {},
                 "stats": {"num_frames_read": 1},
             }
-            fake_compression_result = {"roi_bin_bytes": b"roi", "bg_bin_bytes": b"bg", "meta": {"ok": True}}
+            fake_compression_result = {
+                "roi_stream_bytes": b"roi",
+                "bg_stream_bytes": b"bg",
+                "meta": {"ok": True, "streams": {"roi": {"codec": "av1"}, "bg": {"codec": "av1"}}},
+            }
 
             with patch.object(run_compression, "_cuda_is_available", return_value=True):
                 with patch.object(run_compression, "remove_redundant_frames", return_value=fake_frame_result):
-                    with patch.object(run_compression, "compress_keep_streams_dcvc", return_value=fake_compression_result):
+                    with patch.object(run_compression, "compress_keep_streams", return_value=fake_compression_result):
                         with patch.object(sys, "argv", ["run_compression.py", str(video_path), "--config", str(cfg_path)]):
                             run_compression.main()
 
@@ -81,8 +79,8 @@ class TestRunOutputContract(unittest.TestCase):
             # Only zip should remain from pipeline artifacts.
             self.assertFalse((out_dir_abs / "roi_detections.json").exists())
             self.assertFalse((out_dir_abs / "frame_drop.json").exists())
-            self.assertFalse((out_dir_abs / "roi.bin").exists())
-            self.assertFalse((out_dir_abs / "bg.bin").exists())
+            self.assertFalse((out_dir_abs / "roi.ivf").exists())
+            self.assertFalse((out_dir_abs / "bg.ivf").exists())
             self.assertFalse((out_dir_abs / "meta.json").exists())
 
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -91,8 +89,8 @@ class TestRunOutputContract(unittest.TestCase):
                     {
                         "roi_detections.json",
                         "frame_drop.json",
-                        "roi.bin",
-                        "bg.bin",
+                        "roi.ivf",
+                        "bg.ivf",
                         "meta.json",
                         "compression.runtime_config.json",
                         "archive_manifest.json",
@@ -106,14 +104,14 @@ class TestRunOutputContract(unittest.TestCase):
         if out_dir_abs.exists():
             shutil.rmtree(out_dir_abs)
 
-    def test_strict_gpu_rejects_use_cuda_false(self) -> None:
+    def test_runtime_device_fallbacks_still_work_for_roi_without_compression_device_logic(self) -> None:
         cfg = {
             "roi_detection": {"enable": False},
-            "compression": {"dcvc": {"use_cuda": False}},
+            "compression": {"codec": {"backend": "av1"}},
         }
         with patch.object(run_compression, "_cuda_is_available", return_value=True):
-            with self.assertRaises(ValueError):
-                run_compression._apply_runtime_device_fallbacks(cfg)
+            report = run_compression._apply_runtime_device_fallbacks(cfg)
+        self.assertEqual(report["runtime_mode"], "best_available")
 
     def test_model_select_prefers_onnx_with_gpu_provider(self) -> None:
         cfg = {
@@ -215,8 +213,8 @@ class TestRunOutputContract(unittest.TestCase):
                     "meta.json": "custom_meta.json",
                     "roi_detections.json": "custom_roi.json",
                     "frame_drop.json": "custom_frame_drop.json",
-                    "roi.bin": "custom_roi.bin",
-                    "bg.bin": "custom_bg.bin",
+                    "roi.stream": "custom_roi.ivf",
+                    "bg.stream": "custom_bg.ivf",
                 },
             }
             with zipfile.ZipFile(archive_path, "w") as zf:
@@ -224,14 +222,14 @@ class TestRunOutputContract(unittest.TestCase):
                 zf.writestr("custom_meta.json", "{}")
                 zf.writestr("custom_roi.json", '{"frames": {}}')
                 zf.writestr("custom_frame_drop.json", '{"stats": {}}')
-                zf.writestr("custom_roi.bin", b"roi")
-                zf.writestr("custom_bg.bin", b"bg")
+                zf.writestr("custom_roi.ivf", b"roi")
+                zf.writestr("custom_bg.ivf", b"bg")
 
             payloads = rd._load_archive_payloads(archive_path)
 
         self.assertEqual(json.loads(payloads["meta.json"].decode("utf-8")), {})
-        self.assertEqual(payloads["roi.bin"], b"roi")
-        self.assertEqual(payloads["bg.bin"], b"bg")
+        self.assertEqual(payloads["roi.stream"], b"roi")
+        self.assertEqual(payloads["bg.stream"], b"bg")
 
     def test_pick_stream_indices_prefers_metadata_frame_index_map(self) -> None:
         frame_drop_json = {"roi_kept_frames": [0, 10, 20]}

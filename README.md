@@ -69,7 +69,6 @@ Top-level structure:
 - `scripts/`
 - `tests/`
 - `docker/`
-- `DCVC/`
 - `_third_party_amt/`
 - `run_compression.py`
 - `run_decompression.py`
@@ -99,8 +98,6 @@ Expected local working directories:
 Required files in `models/`:
 
 - `MDV6-yolov9-c.pt`
-- `cvpr2025_image.pth.tar`
-- `cvpr2025_video.pth.tar`
 - `amt-s.pth` if AMT interpolation is enabled
 
 Optional model file:
@@ -139,11 +136,6 @@ source venv/bin/activate
 python -m pip install --upgrade pip==26.0.1 setuptools==82.0.0 wheel==0.46.3
 pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.10.0+cu126 torchvision==0.25.0+cu126
 pip install -r docker/requirements.gpu.txt
-cd DCVC/src/cpp
-pip install --no-build-isolation .
-cd ../layers/extensions/inference
-pip install --no-build-isolation .
-cd ../../../..
 ```
 
 Windows PowerShell:
@@ -154,11 +146,6 @@ python -m venv venv
 python -m pip install --upgrade pip==26.0.1 setuptools==82.0.0 wheel==0.46.3
 pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.10.0+cu126 torchvision==0.25.0+cu126
 pip install -r docker\requirements.gpu.txt
-cd DCVC\src\cpp
-pip install --no-build-isolation .
-cd ..\layers\extensions\inference
-pip install --no-build-isolation .
-cd ..\..\..\..
 ```
 
 ### 3. Download models

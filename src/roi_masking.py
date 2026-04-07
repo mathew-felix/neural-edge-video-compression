@@ -13,6 +13,51 @@ def boxes_for_frame(roi_boxes_map: Mapping[Any, Any], frame_idx: int) -> List[An
     return boxes if isinstance(boxes, list) else []
 
 
+def crop_bbox_from_boxes(
+    *,
+    width: int,
+    height: int,
+    boxes: List[Any],
+    roi_min_conf: float = 0.0,
+    margin_px: int = 0,
+) -> tuple[int, int, int, int] | None:
+    xs1: List[int] = []
+    ys1: List[int] = []
+    xs2: List[int] = []
+    ys2: List[int] = []
+    for box in boxes:
+        if not isinstance(box, dict):
+            continue
+        try:
+            conf = float(box.get("conf", box.get("confidence", 1.0)))
+        except (TypeError, ValueError):
+            conf = 1.0
+        if conf < float(roi_min_conf):
+            continue
+        try:
+            x1 = int(box.get("x1", 0))
+            y1 = int(box.get("y1", 0))
+            x2 = int(box.get("x2", 0))
+            y2 = int(box.get("y2", 0))
+        except (TypeError, ValueError):
+            continue
+        if x2 > x1 and y2 > y1:
+            xs1.append(x1)
+            ys1.append(y1)
+            xs2.append(x2)
+            ys2.append(y2)
+    if not xs1:
+        return None
+    m = max(0, int(margin_px))
+    x1 = max(0, min(int(width), min(xs1) - m))
+    y1 = max(0, min(int(height), min(ys1) - m))
+    x2 = max(0, min(int(width), max(xs2) + m))
+    y2 = max(0, min(int(height), max(ys2) + m))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
 def build_boxes_mask(
     *,
     width: int,

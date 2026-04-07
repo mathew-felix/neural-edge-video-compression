@@ -222,41 +222,40 @@ class _LosslessYuv420Writer:
 
 
 def _enforce_strict_gpu_runtime(dec_cfg: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
-    if not bool(torch.cuda.is_available()):
-        raise RuntimeError("Strict GPU runtime requires CUDA, but torch.cuda.is_available() is false.")
-
-    dcvc_cfg = (meta.get("dcvc", {}) or {}).copy()
-    if not _coerce_bool(dcvc_cfg.get("use_cuda", True), default=True):
-        raise ValueError("Strict GPU runtime forbids decompression dcvc.use_cuda=false.")
-    dcvc_device = str(dcvc_cfg.get("device", "cuda")).strip().lower()
-    if dcvc_device in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids decompression dcvc.device set to CPU/MPS.")
-    dcvc_selected_device, dcvc_selected_idx = _normalize_cuda_device(
-        dcvc_cfg.get("cuda_idx", dcvc_cfg.get("device", "cuda")),
-        field_name="decompression.dcvc.device",
-    )
-    dcvc_cfg["use_cuda"] = True
-    dcvc_cfg["device"] = str(dcvc_selected_device)
-    dcvc_cfg["cuda_idx"] = dcvc_selected_idx
-    meta["dcvc"] = dcvc_cfg
-
     interp_cfg = (dec_cfg.get("interpolate", {}) or {}).copy()
     interp_selected_device = None
     interp_selected_idx = None
     if bool(interp_cfg.get("enable", True)):
-        interp_selected_device, interp_selected_idx = _normalize_cuda_device(
-            interp_cfg.get("device", "cuda"),
-            field_name="decompression.interpolate.device",
-        )
-        interp_cfg["device"] = str(interp_selected_device)
+        raw_device = str(interp_cfg.get("device", "auto")).strip().lower()
+        if raw_device in {"", "auto"}:
+            if bool(torch.cuda.is_available()):
+                interp_selected_device, interp_selected_idx = _normalize_cuda_device(
+                    "cuda",
+                    field_name="decompression.interpolate.device",
+                )
+                interp_cfg["device"] = str(interp_selected_device)
+            else:
+                mps_backend = getattr(torch.backends, "mps", None)
+                if mps_backend is not None and bool(mps_backend.is_available()):
+                    interp_selected_device, interp_selected_idx = "mps", None
+                    interp_cfg["device"] = "mps"
+                else:
+                    interp_selected_device, interp_selected_idx = "cpu", None
+                    interp_cfg["device"] = "cpu"
+        elif raw_device in {"cpu", "mps"}:
+            interp_selected_device, interp_selected_idx = raw_device, None
+            interp_cfg["device"] = raw_device
+        else:
+            interp_selected_device, interp_selected_idx = _normalize_cuda_device(
+                interp_cfg.get("device", "cuda"),
+                field_name="decompression.interpolate.device",
+            )
+            interp_cfg["device"] = str(interp_selected_device)
         dec_cfg["interpolate"] = interp_cfg
 
     return {
-        "runtime_mode": "strict_gpu_only",
-        "cuda_available": True,
-        "dcvc_device_selected": str(dcvc_cfg.get("device", "cuda")),
-        "dcvc_cuda_idx_selected": dcvc_selected_idx,
-        "dcvc_use_cuda_selected": bool(dcvc_cfg.get("use_cuda", True)),
+        "runtime_mode": "best_available",
+        "cuda_available": bool(torch.cuda.is_available()),
         "interpolate_enabled": bool((dec_cfg.get("interpolate", {}) or {}).get("enable", True)),
         "interpolate_device_selected": interp_selected_device,
         "interpolate_cuda_idx_selected": interp_selected_idx,
@@ -376,35 +375,6 @@ def _pick_fps(meta: Dict[str, Any], frame_drop_json: Dict[str, Any]) -> float:
     if stats.get("fps_in"):
         return float(stats["fps_in"])
     return 30.0
-
-
-def _apply_dcvc_overrides(meta: Dict[str, Any], dec_cfg: Dict[str, Any]) -> None:
-    dcvc_cfg = (meta.get("dcvc", {}) or {}).copy()
-    dcvc_override = dec_cfg.get("dcvc", {}) or {}
-    if not isinstance(dcvc_override, dict):
-        meta["dcvc"] = dcvc_cfg
-        return
-
-    device_overridden = False
-    cuda_idx_overridden = False
-    for key in ("repo_dir", "model_i", "model_p", "device", "use_cuda", "cuda_idx", "force_zero_thres"):
-        value = dcvc_override.get(key, None)
-        if value is None:
-            continue
-        if isinstance(value, str) and not value.strip():
-            continue
-        dcvc_cfg[key] = value
-        if key == "device":
-            device_overridden = True
-        elif key == "cuda_idx":
-            cuda_idx_overridden = True
-
-    # If the user explicitly overrides the device but not the CUDA index, let the
-    # runtime resolve the device string instead of inheriting a stale archive index.
-    if device_overridden and not cuda_idx_overridden:
-        dcvc_cfg.pop("cuda_idx", None)
-
-    meta["dcvc"] = dcvc_cfg
 
 
 _AMT_MIN_SIDE = 128
@@ -838,7 +808,6 @@ def _build_roi_segment(
             mids.append(cv2.addWeighted(left_crop, 1.0 - a, right_crop, a, 0.0))
         segment["mids"] = mids
         return segment
-
     segment["mids"] = _interpolate_many_batched(
         interpolator,
         left_crop,
@@ -899,10 +868,8 @@ def main() -> None:
     amt_batch_size = int(args.amt_batch_size) if args.amt_batch_size is not None else int(interp_cfg.get("batch_size", 1))
     amt_crop_margin = int(args.amt_crop_margin) if args.amt_crop_margin is not None else int(interp_cfg.get("crop_margin", 8))
     amt_max_crop_side = int(interp_cfg.get("max_crop_side", 768))
-
     payloads = rd._load_archive_payloads(archive_path)
     meta = json.loads(payloads["meta.json"].decode("utf-8"))
-    _apply_dcvc_overrides(meta, dec_cfg)
     runtime_device = _enforce_strict_gpu_runtime(dec_cfg, meta)
     roi_json = json.loads(payloads["roi_detections.json"].decode("utf-8"))
     frame_drop_json = json.loads(payloads["frame_drop.json"].decode("utf-8"))
@@ -941,7 +908,7 @@ def main() -> None:
         amt_batch_size=int(amt_batch_size),
         amt_crop_margin=int(amt_crop_margin),
         amt_max_crop_side=int(amt_max_crop_side),
-        dcvc_repo_dir=str((meta.get("dcvc", {}) or {}).get("repo_dir", "")),
+        compression_backend=str((meta.get("compression", {}) or {}).get("backend", "")),
         amt_repo_dir=str((dec_cfg.get("interpolate", {}) or {}).get("repo_dir", "")),
         runtime_mode=str(runtime_device.get("runtime_mode", "")),
     )
@@ -959,8 +926,8 @@ def main() -> None:
     try:
         _status("Decoding ROI and background streams...")
         roi_store, roi_frame_count, bg_store, bg_frame_count = decode_roi_bg_streams_to_memmap(
-            payloads["roi.bin"],
-            payloads["bg.bin"],
+            payloads["roi.stream"],
+            payloads["bg.stream"],
             meta,
             work_dir=decode_tmp_dir,
             progress_cb_roi=_on_roi_decoded,
@@ -976,7 +943,6 @@ def main() -> None:
             bg_decoded_callbacks=int(decoded_bg_updates[0]),
             decode_storage="memmap_frame_cache",
         )
-
         if int(roi_frame_count) <= 0 or int(bg_frame_count) <= 0:
             raise RuntimeError("Decoded zero ROI/BG frames from archive")
 

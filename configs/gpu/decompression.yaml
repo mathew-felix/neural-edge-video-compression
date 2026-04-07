@@ -6,17 +6,14 @@ decompression:
   roi_temporal_alpha_still: 0.70
   roi_temporal_alpha_motion: 0.92
   roi_blend_edge_px: 2
+  roi_mask_erode_px: 12
+  roi_diff_mask_threshold: 14
+  roi_diff_mask_dilate_px: 3
   roi_temporal_mask_dilate: 1
   roi_temporal_overlap_only: true
 
-  # Local DCVC paths (used to override archive metadata paths when needed).
-  dcvc:
-    repo_dir: "DCVC"
-    model_i: "models/cvpr2025_image.pth.tar"
-    model_p: "models/cvpr2025_video.pth.tar"
-    use_cuda: true
-    cuda_idx: 0
-    force_zero_thres: null
+  codec_runtime:
+    ffmpeg_bin: "ffmpeg"
 
   interpolate:
     enable: true
@@ -24,9 +21,10 @@ decompression:
     weights_path: "models/amt-s.pth"
     # Local AMT repository path.
     repo_dir: "_third_party_amt"
-    device: "cuda"
+    device: "auto"
     fp16: true
     pad_to: 16
     batch_size: 8
     crop_margin: 8
     max_crop_side: 768
+    max_crop_ratio: 0.35

@@ -25,8 +25,8 @@ class TestSanityArchiveHelpers(unittest.TestCase):
                     "meta.json": "custom_meta.json",
                     "roi_detections.json": "custom_roi.json",
                     "frame_drop.json": "custom_frame_drop.json",
-                    "roi.bin": "custom_roi.bin",
-                    "bg.bin": "custom_bg.bin",
+                    "roi.stream": "custom_roi.ivf",
+                    "bg.stream": "custom_bg.ivf",
                 },
             }
             meta = {
@@ -35,7 +35,7 @@ class TestSanityArchiveHelpers(unittest.TestCase):
                     "bg": {"frames_encoded": 1, "frame_index_map": [0]},
                 },
                 "roi_detection": {"model_selection": {"selected_format": "default"}},
-                "runtime": {"dcvc_device_selected": "cuda:0"},
+                "runtime": {"compression_backend": "av1"},
                 "sizes": {},
             }
             frame_drop = {
@@ -51,8 +51,8 @@ class TestSanityArchiveHelpers(unittest.TestCase):
                 zf.writestr("custom_meta.json", json.dumps(meta))
                 zf.writestr("custom_roi.json", json.dumps(roi_json))
                 zf.writestr("custom_frame_drop.json", json.dumps(frame_drop))
-                zf.writestr("custom_roi.bin", b"roi")
-                zf.writestr("custom_bg.bin", b"bg")
+                zf.writestr("custom_roi.ivf", b"roi")
+                zf.writestr("custom_bg.ivf", b"bg")
 
             metrics = test_compression._read_archive_metrics(archive_path)
 
@@ -70,8 +70,8 @@ class TestSanityArchiveHelpers(unittest.TestCase):
                     "meta.json": "custom_meta.json",
                     "roi_detections.json": "custom_roi.json",
                     "frame_drop.json": "custom_frame_drop.json",
-                    "roi.bin": "custom_roi.bin",
-                    "bg.bin": "custom_bg.bin",
+                    "roi.stream": "custom_roi.ivf",
+                    "bg.stream": "custom_bg.ivf",
                 },
             }
             meta = {"video": {"frames_total": 12}}
@@ -81,8 +81,8 @@ class TestSanityArchiveHelpers(unittest.TestCase):
                 zf.writestr("custom_meta.json", json.dumps(meta))
                 zf.writestr("custom_roi.json", json.dumps({"frames": {}}))
                 zf.writestr("custom_frame_drop.json", json.dumps({"stats": {}}))
-                zf.writestr("custom_roi.bin", b"roi")
-                zf.writestr("custom_bg.bin", b"bg")
+                zf.writestr("custom_roi.ivf", b"roi")
+                zf.writestr("custom_bg.ivf", b"bg")
 
             loaded = test_decompression._read_archive_meta(archive_path)
 

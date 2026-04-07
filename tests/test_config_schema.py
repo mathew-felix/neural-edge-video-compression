@@ -29,14 +29,8 @@ class TestConfigSchema(unittest.TestCase):
                 }
             },
             "compression": {
-                "dcvc": {
-                    "repo_dir": "DCVC",
-                    "model_i": "models/i.pth.tar",
-                    "model_p": "models/p.pth.tar",
-                    "use_cuda": True,
-                    "reset_interval": 32,
-                },
-                "quality": {"roi_qp_i": 50, "roi_qp_p": 50, "bg_qp_i": 6, "bg_qp_p": 6},
+                "codec": {"backend": "av1", "ffmpeg_bin": "ffmpeg", "preset": "8", "gop": 32},
+                "quality": {"roi_qp": 18, "bg_qp": 35},
                 "roi": {"min_conf": 0.25},
             },
             "output": {"write_outputs": True, "out_dir": "outputs/test"},
@@ -48,9 +42,6 @@ class TestConfigSchema(unittest.TestCase):
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
             (root / "models" / "yolo.pt").write_bytes(b"x")
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
             cfg = self._base_cfg(root)
             validate_pipeline_config(cfg, root_dir=root)
 
@@ -60,9 +51,6 @@ class TestConfigSchema(unittest.TestCase):
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
             (root / "models" / "yolo.pt").write_bytes(b"x")
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
 
             cfg = self._base_cfg(root)
             cfg["frame_removal"]["params"]["motion"]["t_high"] = 1.0
@@ -75,9 +63,6 @@ class TestConfigSchema(unittest.TestCase):
             root = Path(td)
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
 
             cfg = self._base_cfg(root)
             cfg["roi_detection"]["enable"] = False
@@ -91,9 +76,6 @@ class TestConfigSchema(unittest.TestCase):
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
             (root / "models" / "yolo.pt").write_bytes(b"x")
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
 
             cfg = self._base_cfg(root)
             cfg["roi_detection"]["tracking"]["enable_propagation"] = "false"
@@ -107,9 +89,6 @@ class TestConfigSchema(unittest.TestCase):
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
             (root / "models" / "yolo.pt").write_bytes(b"x")
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
 
             cfg = self._base_cfg(root)
             cfg["roi_detection"]["runtime"]["prefer_onnx"] = True
@@ -124,9 +103,6 @@ class TestConfigSchema(unittest.TestCase):
             (root / "video.mp4").write_bytes(b"x")
             (root / "models").mkdir(parents=True, exist_ok=True)
             (root / "models" / "yolo.pt").write_bytes(b"x")
-            (root / "models" / "i.pth.tar").write_bytes(b"x")
-            (root / "models" / "p.pth.tar").write_bytes(b"x")
-            (root / "DCVC").mkdir(parents=True, exist_ok=True)
 
             cfg = self._base_cfg(root)
             cfg["roi_detection"]["runtime"]["prefer_onnx_strict"] = True

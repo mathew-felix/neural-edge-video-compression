@@ -98,27 +98,25 @@ def validate_pipeline_config(cfg: Dict[str, Any], video_path: Optional[str] = No
         dev = runtime_cfg.get("device")
         if isinstance(dev, bool):
             errors.append(
-                "roi_detection.runtime.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
+                "roi_detection.runtime.device must be one of: auto, cpu, mps, cuda, cuda:<index>, or integer GPU index"
             )
         elif isinstance(dev, int):
             if int(dev) < 0:
                 errors.append("roi_detection.runtime.device integer index must be >= 0")
         elif isinstance(dev, str):
             s = dev.strip().lower()
-            if s in {"cpu", "mps"}:
-                errors.append("Strict GPU runtime forbids roi_detection.runtime.device set to CPU/MPS")
             valid = (
-                s in {"auto", "cuda"}
+                s in {"auto", "cpu", "mps", "cuda"}
                 or s.isdigit()
                 or (s.startswith("cuda:") and s.split(":", 1)[1].strip().isdigit())
             )
             if not valid:
                 errors.append(
-                    "roi_detection.runtime.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
+                    "roi_detection.runtime.device must be one of: auto, cpu, mps, cuda, cuda:<index>, or integer GPU index"
                 )
         else:
             errors.append(
-                "roi_detection.runtime.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
+                "roi_detection.runtime.device must be one of: auto, cpu, mps, cuda, cuda:<index>, or integer GPU index"
             )
     if "prefer_onnx" in runtime_cfg:
         _ensure_type(runtime_cfg["prefer_onnx"], bool, "roi_detection.runtime.prefer_onnx", errors)
@@ -247,53 +245,36 @@ def validate_pipeline_config(cfg: Dict[str, Any], video_path: Optional[str] = No
             )
 
     # compression
-    dcvc_cfg = _as_dict(comp_cfg.get("dcvc", {}), "compression.dcvc", errors)
+    codec_cfg = _as_dict(comp_cfg.get("codec", {}), "compression.codec", errors)
     quality_cfg = _as_dict(comp_cfg.get("quality", {}), "compression.quality", errors)
     roi_comp_cfg = _as_dict(comp_cfg.get("roi", {}), "compression.roi", errors)
 
-    for key in ("model_i", "model_p", "repo_dir"):
-        if not dcvc_cfg.get(key):
-            errors.append(f"compression.dcvc.{key} is required")
-    if dcvc_cfg.get("model_i"):
-        _must_exist(str(dcvc_cfg["model_i"]), "compression.dcvc.model_i", root, errors)
-    if dcvc_cfg.get("model_p"):
-        _must_exist(str(dcvc_cfg["model_p"]), "compression.dcvc.model_p", root, errors)
-    if dcvc_cfg.get("repo_dir"):
-        _must_exist(str(dcvc_cfg["repo_dir"]), "compression.dcvc.repo_dir", root, errors)
-    if "reset_interval" in dcvc_cfg:
-        _ensure_number_range(dcvc_cfg["reset_interval"], "compression.dcvc.reset_interval", errors, 1, None)
-    if "device" in dcvc_cfg:
-        dev = dcvc_cfg.get("device")
-        if isinstance(dev, bool):
-            errors.append(
-                "compression.dcvc.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
-            )
-        elif isinstance(dev, int):
-            if int(dev) < 0:
-                errors.append("compression.dcvc.device integer index must be >= 0")
-        elif isinstance(dev, str):
-            s = dev.strip().lower()
-            if s in {"cpu", "mps"}:
-                errors.append("Strict GPU runtime forbids compression.dcvc.device set to CPU/MPS")
-            valid = (
-                s in {"auto", "cuda"}
-                or s.isdigit()
-                or (s.startswith("cuda:") and s.split(":", 1)[1].strip().isdigit())
-            )
-            if not valid:
-                errors.append(
-                    "compression.dcvc.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
-                )
-        else:
-            errors.append(
-                "compression.dcvc.device must be one of: auto, cuda, cuda:<index>, or integer GPU index"
-            )
-    if "use_cuda" in dcvc_cfg:
-        _ensure_type(dcvc_cfg["use_cuda"], bool, "compression.dcvc.use_cuda", errors)
-        if isinstance(dcvc_cfg.get("use_cuda"), bool) and not bool(dcvc_cfg.get("use_cuda")):
-            errors.append("Strict GPU runtime forbids compression.dcvc.use_cuda=false")
+    if not codec_cfg.get("backend"):
+        errors.append("compression.codec.backend is required")
+    else:
+        backend = str(codec_cfg.get("backend", "")).strip().lower()
+        if backend != "av1":
+            errors.append("compression.codec.backend must be 'av1'")
+    if "ffmpeg_bin" in codec_cfg:
+        _ensure_type(codec_cfg["ffmpeg_bin"], str, "compression.codec.ffmpeg_bin", errors)
+    if "av1_encoder" in codec_cfg:
+        _ensure_type(codec_cfg["av1_encoder"], str, "compression.codec.av1_encoder", errors)
+        if str(codec_cfg.get("av1_encoder", "")).strip().lower() not in {"auto", "libsvtav1", "libaom-av1"}:
+            errors.append("compression.codec.av1_encoder must be one of: auto, libsvtav1, libaom-av1")
+    if "preset" in codec_cfg:
+        _ensure_type(codec_cfg["preset"], str, "compression.codec.preset", errors)
+    if "cpu_used" in codec_cfg:
+        _ensure_type(codec_cfg["cpu_used"], str, "compression.codec.cpu_used", errors)
+    if "row_mt" in codec_cfg:
+        _ensure_type(codec_cfg["row_mt"], str, "compression.codec.row_mt", errors)
+    if "tiles" in codec_cfg:
+        _ensure_type(codec_cfg["tiles"], str, "compression.codec.tiles", errors)
+    if "pix_fmt" in codec_cfg:
+        _ensure_type(codec_cfg["pix_fmt"], str, "compression.codec.pix_fmt", errors)
+    if "gop" in codec_cfg:
+        _ensure_number_range(codec_cfg["gop"], "compression.codec.gop", errors, 1, None)
 
-    for key in ("roi_qp_i", "roi_qp_p", "bg_qp_i", "bg_qp_p"):
+    for key in ("roi_qp", "bg_qp"):
         if key in quality_cfg:
             _ensure_number_range(quality_cfg[key], f"compression.quality.{key}", errors, 0, 63)
     if "min_conf" in roi_comp_cfg:

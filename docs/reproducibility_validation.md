@@ -41,8 +41,6 @@ python scripts\test_decompression.py outputs\windows_smoke\test_video.zip --conf
 
 - virtual environment creation
 - pinned Python dependency installation
-- DCVC C++ extension build
-- DCVC CUDA inference extension build
 - CUDA availability check
 - model download and checksum verification
 - ROI detection sanity run

@@ -110,7 +110,7 @@ Reported stage metrics:
 
 ## Baseline Logic
 
-The project compares against uniform full-frame DCVC baselines to test whether ROI-priority processing produces a better size-quality tradeoff for the animal region under the thesis objective.
+The project compares against uniform full-frame compression baselines to test whether ROI-priority processing produces a better size-quality tradeoff for the animal region under the thesis objective.
 
 The comparison is not defined as:
 
