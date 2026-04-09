@@ -11,12 +11,14 @@ decompression:
 
   # Local DCVC paths (used to override archive metadata paths when needed).
   dcvc:
+    # Must match the archive backend unless you intentionally override it.
+    backend: "dcvc_rt_int16"
     repo_dir: "DCVC"
     model_i: "models/cvpr2025_image.pth.tar"
     model_p: "models/cvpr2025_video.pth.tar"
     use_cuda: true
     cuda_idx: 0
-    force_zero_thres: null
+    force_zero_thres: 0.12
 
   interpolate:
     enable: true

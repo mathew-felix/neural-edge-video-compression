@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from decompression import common as rd
-from decompression import decode_roi_bg_streams_to_memmap
+from decompression import decode_roi_bg_streams_to_cache, decode_roi_bg_streams_to_memmap
 from decompression.interpolation_amt import AmtInterpolator, _pad_to_divisor, _unpad
 try:
     from roi_masking import mask_to_alpha
@@ -387,7 +387,7 @@ def _apply_dcvc_overrides(meta: Dict[str, Any], dec_cfg: Dict[str, Any]) -> None
 
     device_overridden = False
     cuda_idx_overridden = False
-    for key in ("repo_dir", "model_i", "model_p", "device", "use_cuda", "cuda_idx", "force_zero_thres"):
+    for key in ("backend", "repo_dir", "model_i", "model_p", "device", "use_cuda", "cuda_idx", "force_zero_thres"):
         value = dcvc_override.get(key, None)
         if value is None:
             continue
@@ -555,6 +555,48 @@ def _close_memmap(arr: Any) -> None:
             pass
 
 
+def _select_decoded_frame_store(
+    *,
+    dec_cfg: Dict[str, Any],
+    meta: Dict[str, Any],
+    roi_frame_hint: Optional[int],
+    bg_frame_hint: Optional[int],
+) -> Dict[str, Any]:
+    video_info = meta.get("video", {}) or {}
+    streams = meta.get("streams", {}) or {}
+    roi_stream_meta = streams.get("roi", {}) or {}
+    bg_stream_meta = streams.get("bg", {}) or {}
+    width = int(video_info.get("width", 0) or 0)
+    height = int(video_info.get("height", 0) or 0)
+    if roi_frame_hint is None:
+        if roi_stream_meta.get("frames_encoded") is not None:
+            roi_frame_hint = int(roi_stream_meta.get("frames_encoded"))
+        elif isinstance(roi_stream_meta.get("frame_index_map"), list):
+            roi_frame_hint = len(roi_stream_meta.get("frame_index_map"))
+    if bg_frame_hint is None:
+        if bg_stream_meta.get("frames_encoded") is not None:
+            bg_frame_hint = int(bg_stream_meta.get("frames_encoded"))
+        elif isinstance(bg_stream_meta.get("frame_index_map"), list):
+            bg_frame_hint = len(bg_stream_meta.get("frame_index_map"))
+    mode = str(dec_cfg.get("decoded_frame_store", "auto")).strip().lower()
+    threshold_mb = int(dec_cfg.get("decoded_frame_store_threshold_mb", 1024))
+    estimated_bytes: Optional[int] = None
+    if width > 0 and height > 0 and roi_frame_hint is not None and bg_frame_hint is not None:
+        estimated_bytes = int((int(roi_frame_hint) + int(bg_frame_hint)) * width * height * 3)
+    selected = mode
+    if mode == "auto":
+        if estimated_bytes is not None and estimated_bytes >= int(threshold_mb) * 1024 * 1024:
+            selected = "cache"
+        else:
+            selected = "memmap"
+    return {
+        "requested": mode,
+        "selected": selected,
+        "threshold_mb": int(threshold_mb),
+        "estimated_decoded_store_bytes": estimated_bytes,
+    }
+
+
 def _frame_linear_at(
     frame_idx: int,
     anchor_indices: Sequence[int],
@@ -630,7 +672,7 @@ def _mask_at(
     roi_min_conf: float,
     roi_dilate_px: int,
     cache: Dict[int, np.ndarray],
-    max_cache_items: int = 32,
+    max_cache_items: int = 8,
 ) -> np.ndarray:
     cached = cache.get(int(frame_idx), None)
     if cached is not None:
@@ -661,7 +703,7 @@ def _alpha_at(
     blend_edge_px: int,
     mask_cache: Dict[int, np.ndarray],
     alpha_cache: Dict[int, np.ndarray],
-    max_cache_items: int = 32,
+    max_cache_items: int = 8,
 ) -> np.ndarray:
     cached = alpha_cache.get(int(frame_idx), None)
     if cached is not None:
@@ -677,7 +719,7 @@ def _alpha_at(
         roi_dilate_px=roi_dilate_px,
         cache=mask_cache,
     )
-    alpha = mask_to_alpha(mask, int(blend_edge_px))
+    alpha = mask_to_alpha(mask, int(blend_edge_px)).astype(np.float16, copy=False)
     return _cache_put(alpha_cache, int(frame_idx), alpha, max_cache_items)
 
 
@@ -941,6 +983,7 @@ def main() -> None:
         amt_batch_size=int(amt_batch_size),
         amt_crop_margin=int(amt_crop_margin),
         amt_max_crop_side=int(amt_max_crop_side),
+        dcvc_backend=str((meta.get("dcvc", {}) or {}).get("backend", "")),
         dcvc_repo_dir=str((meta.get("dcvc", {}) or {}).get("repo_dir", "")),
         amt_repo_dir=str((dec_cfg.get("interpolate", {}) or {}).get("repo_dir", "")),
         runtime_mode=str(runtime_device.get("runtime_mode", "")),
@@ -958,23 +1001,44 @@ def main() -> None:
     decode_tmp_dir = Path(tempfile.mkdtemp(prefix="wildroi_decode_", dir=str(out_path.parent)))
     try:
         _status("Decoding ROI and background streams...")
-        roi_store, roi_frame_count, bg_store, bg_frame_count = decode_roi_bg_streams_to_memmap(
-            payloads["roi.bin"],
-            payloads["bg.bin"],
-            meta,
-            work_dir=decode_tmp_dir,
-            progress_cb_roi=_on_roi_decoded,
-            progress_cb_bg=_on_bg_decoded,
-            max_frames_roi=roi_decode_limit,
-            max_frames_bg=bg_decode_limit,
+        decoded_store = _select_decoded_frame_store(
+            dec_cfg=dec_cfg,
+            meta=meta,
+            roi_frame_hint=roi_decode_limit,
+            bg_frame_hint=bg_decode_limit,
         )
+        if str(decoded_store["selected"]) == "cache":
+            roi_store, roi_frame_count, bg_store, bg_frame_count = decode_roi_bg_streams_to_cache(
+                payloads["roi.bin"],
+                payloads["bg.bin"],
+                meta,
+                work_dir=decode_tmp_dir,
+                progress_cb_roi=_on_roi_decoded,
+                progress_cb_bg=_on_bg_decoded,
+                max_frames_roi=roi_decode_limit,
+                max_frames_bg=bg_decode_limit,
+            )
+        else:
+            roi_store, roi_frame_count, bg_store, bg_frame_count = decode_roi_bg_streams_to_memmap(
+                payloads["roi.bin"],
+                payloads["bg.bin"],
+                meta,
+                work_dir=decode_tmp_dir,
+                progress_cb_roi=_on_roi_decoded,
+                progress_cb_bg=_on_bg_decoded,
+                max_frames_roi=roi_decode_limit,
+                max_frames_bg=bg_decode_limit,
+            )
         rd._log(
             "decompression_parallel.decode_complete",
             roi_frames=int(roi_frame_count),
             bg_frames=int(bg_frame_count),
             roi_decoded_callbacks=int(decoded_roi_updates[0]),
             bg_decoded_callbacks=int(decoded_bg_updates[0]),
-            decode_storage="memmap_frame_cache",
+            decode_storage=str(decoded_store["selected"]),
+            decode_storage_requested=str(decoded_store["requested"]),
+            decode_storage_threshold_mb=int(decoded_store["threshold_mb"]),
+            estimated_decoded_store_bytes=decoded_store["estimated_decoded_store_bytes"],
         )
 
         if int(roi_frame_count) <= 0 or int(bg_frame_count) <= 0:

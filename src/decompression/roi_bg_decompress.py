@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Tuple, Optional, Callable
 
 import numpy as np
 import cv2
+from codec_backends import load_codec_backend, normalize_codec_backend_id
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,6 +108,10 @@ def _resolve_hint(meta_hint: Any, user_limit: Optional[int]) -> Optional[int]:
     if hint is None:
         return lim
     return min(hint, lim)
+
+
+def _load_stream_backend(dcvc_cfg: Dict[str, Any]):
+    return load_codec_backend(normalize_codec_backend_id(dcvc_cfg.get("backend", None)))
 
 
 
@@ -558,6 +563,7 @@ def decode_roi_bg_streams(
     Decode ROI and BG streams and return them separately.
     """
     dcvc_cfg = meta.get("dcvc", {}) or {}
+    backend = _load_stream_backend(dcvc_cfg)
     video_info = meta.get("video", {}) or {}
     streams = meta.get("streams", {}) or {}
     roi_stream_meta = streams.get("roi", {}) or {}
@@ -573,14 +579,14 @@ def decode_roi_bg_streams(
     roi_hint = _resolve_hint(roi_count_hint, max_frames_roi)
     bg_hint = _resolve_hint(bg_count_hint, max_frames_bg)
 
-    roi_frames = _decode_stream_bytes_dcvc(
+    roi_frames = backend.decode_stream_bytes(
         roi_bin_bytes,
         dcvc_cfg,
         video_info,
         frame_count_hint=roi_hint,
         progress_cb=progress_cb_roi,
     )
-    bg_frames = _decode_stream_bytes_dcvc(
+    bg_frames = backend.decode_stream_bytes(
         bg_bin_bytes,
         dcvc_cfg,
         video_info,
@@ -601,6 +607,7 @@ def decode_roi_bg_streams_to_memmap(
     max_frames_bg: Optional[int] = None,
 ) -> Tuple[np.memmap, int, np.memmap, int]:
     dcvc_cfg = meta.get("dcvc", {}) or {}
+    backend = _load_stream_backend(dcvc_cfg)
     video_info = meta.get("video", {}) or {}
     streams = meta.get("streams", {}) or {}
     roi_stream_meta = streams.get("roi", {}) or {}
@@ -656,7 +663,7 @@ def decode_roi_bg_streams_to_memmap(
         bg_map[bg_written] = frame
         bg_written += 1
 
-    _decode_stream_bytes_dcvc(
+    backend.decode_stream_bytes(
         roi_bin_bytes,
         dcvc_cfg,
         video_info,
@@ -664,7 +671,7 @@ def decode_roi_bg_streams_to_memmap(
         progress_cb=progress_cb_roi,
         frame_consumer=_consume_roi,
     )
-    _decode_stream_bytes_dcvc(
+    backend.decode_stream_bytes(
         bg_bin_bytes,
         dcvc_cfg,
         video_info,
@@ -688,6 +695,7 @@ def decode_roi_bg_streams_to_cache(
     max_frames_bg: Optional[int] = None,
 ) -> Tuple[List[Path], int, List[Path], int]:
     dcvc_cfg = meta.get("dcvc", {}) or {}
+    backend = _load_stream_backend(dcvc_cfg)
     video_info = meta.get("video", {}) or {}
     streams = meta.get("streams", {}) or {}
     roi_stream_meta = streams.get("roi", {}) or {}
@@ -724,15 +732,15 @@ def decode_roi_bg_streams_to_cache(
 
     def _consume_roi(frame: np.ndarray) -> None:
         nonlocal roi_written
-        _write_frame(roi_dir, roi_written, frame, ".jpg", [cv2.IMWRITE_JPEG_QUALITY, 97], roi_paths)
+        _write_frame(roi_dir, roi_written, frame, ".png", [cv2.IMWRITE_PNG_COMPRESSION, 1], roi_paths)
         roi_written += 1
 
     def _consume_bg(frame: np.ndarray) -> None:
         nonlocal bg_written
-        _write_frame(bg_dir, bg_written, frame, ".jpg", [cv2.IMWRITE_JPEG_QUALITY, 95], bg_paths)
+        _write_frame(bg_dir, bg_written, frame, ".png", [cv2.IMWRITE_PNG_COMPRESSION, 1], bg_paths)
         bg_written += 1
 
-    _decode_stream_bytes_dcvc(
+    backend.decode_stream_bytes(
         roi_bin_bytes,
         dcvc_cfg,
         video_info,
@@ -740,7 +748,7 @@ def decode_roi_bg_streams_to_cache(
         progress_cb=progress_cb_roi,
         frame_consumer=_consume_roi,
     )
-    _decode_stream_bytes_dcvc(
+    backend.decode_stream_bytes(
         bg_bin_bytes,
         dcvc_cfg,
         video_info,

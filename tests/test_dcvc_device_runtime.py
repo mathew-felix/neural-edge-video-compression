@@ -76,6 +76,17 @@ class TestDcvcDeviceRuntime(unittest.TestCase):
         self.assertEqual(report["dcvc_device_selected"], "cuda:2")
         self.assertEqual(report["dcvc_cuda_idx_selected"], 2)
 
+    def test_dcvc_backend_override_is_applied(self) -> None:
+        dec_cfg = {
+            "dcvc": {"backend": "dcvc_rt_int16"},
+            "interpolate": {"enable": False},
+        }
+        meta = {"dcvc": {"backend": "dcvc_pytorch", "use_cuda": True, "device": "cuda"}}
+
+        run_decompression._apply_dcvc_overrides(meta, dec_cfg)
+
+        self.assertEqual(meta["dcvc"]["backend"], "dcvc_rt_int16")
+
 
 if __name__ == "__main__":
     unittest.main()

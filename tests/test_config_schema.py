@@ -134,6 +134,37 @@ class TestConfigSchema(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_pipeline_config(cfg, root_dir=root)
 
+    def test_known_planned_codec_backend_passes_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "video.mp4").write_bytes(b"x")
+            (root / "models").mkdir(parents=True, exist_ok=True)
+            (root / "models" / "yolo.pt").write_bytes(b"x")
+            (root / "models" / "i.pth.tar").write_bytes(b"x")
+            (root / "models" / "p.pth.tar").write_bytes(b"x")
+            (root / "DCVC").mkdir(parents=True, exist_ok=True)
+
+            cfg = self._base_cfg(root)
+            cfg["compression"]["dcvc"]["backend"] = "dcvc_rt_int16"
+
+            validate_pipeline_config(cfg, root_dir=root)
+
+    def test_unknown_codec_backend_fails_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "video.mp4").write_bytes(b"x")
+            (root / "models").mkdir(parents=True, exist_ok=True)
+            (root / "models" / "yolo.pt").write_bytes(b"x")
+            (root / "models" / "i.pth.tar").write_bytes(b"x")
+            (root / "models" / "p.pth.tar").write_bytes(b"x")
+            (root / "DCVC").mkdir(parents=True, exist_ok=True)
+
+            cfg = self._base_cfg(root)
+            cfg["compression"]["dcvc"]["backend"] = "unknown_backend"
+
+            with self.assertRaises(ValueError):
+                validate_pipeline_config(cfg, root_dir=root)
+
 
 if __name__ == "__main__":
     unittest.main()

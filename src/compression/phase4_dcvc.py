@@ -8,7 +8,8 @@ import cv2
 import numpy as np
 import torch
 
-from .dcvc_encoder import VideoInfo, encode_dcvc_frames_to_bytes, probe_video
+from codec_backends import load_codec_backend, normalize_codec_backend_id
+from .dcvc_encoder import VideoInfo, probe_video
 try:
     from roi_masking import boxes_for_frame as _boxes_for_frame_shared, build_boxes_mask
 except ImportError:  # pragma: no cover - test import path fallback
@@ -349,6 +350,8 @@ def compress_keep_streams_dcvc(
     dcvc_cfg_raw = (compression_cfg.get("dcvc", {}) or {})
     quality_cfg = (compression_cfg.get("quality", {}) or {})
     roi_cfg = (compression_cfg.get("roi", {}) or {})
+    backend_id = normalize_codec_backend_id(dcvc_cfg_raw.get("backend", None))
+    backend = load_codec_backend(backend_id)
 
     repo_dir = _resolve_path(str(dcvc_cfg_raw.get("repo_dir", "DCVC")), root)
     model_i = _resolve_path(str(dcvc_cfg_raw.get("model_i", "")), root)
@@ -361,6 +364,7 @@ def compress_keep_streams_dcvc(
         raise FileNotFoundError(f"DCVC repo_dir not found: {repo_dir}")
 
     dcvc_cfg: Dict[str, Any] = dict(dcvc_cfg_raw)
+    dcvc_cfg["backend"] = str(backend.backend_id)
     dcvc_cfg["repo_dir"] = str(repo_dir)
     dcvc_cfg["model_i"] = str(model_i)
     dcvc_cfg["model_p"] = str(model_p)
@@ -392,7 +396,7 @@ def compress_keep_streams_dcvc(
     if low_memory:
         # Stream frames directly into the encoder to avoid caching all kept frames
         # as full-resolution arrays in RAM (the source of multi-GB RSS spikes).
-        roi_encoded = encode_dcvc_frames_to_bytes(
+        roi_encoded = backend.encode_frames(
             _iter_kept_roi_frames(
                 video_path=source_video,
                 roi_kept_frames=roi_indices,
@@ -403,7 +407,7 @@ def compress_keep_streams_dcvc(
             cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": roi_qp_i, "qp_p": roi_qp_p}},
             video_path=f"{source_video}#roi_stream",
         )
-        bg_encoded = encode_dcvc_frames_to_bytes(
+        bg_encoded = backend.encode_frames(
             _iter_kept_bg_frames(
                 video_path=source_video,
                 bg_kept_frames=bg_indices,
@@ -424,7 +428,7 @@ def compress_keep_streams_dcvc(
                 work_dir=Path(td),
             )
             try:
-                roi_encoded = encode_dcvc_frames_to_bytes(
+                roi_encoded = backend.encode_frames(
                     _iter_cached_frames(
                         cached_streams.get("roi_store", None),
                         cached_streams.get("roi_indices", []),
@@ -434,7 +438,7 @@ def compress_keep_streams_dcvc(
                     cfg={"dcvc": dcvc_cfg, "quality": {"qp_i": roi_qp_i, "qp_p": roi_qp_p}},
                     video_path=f"{source_video}#roi_stream",
                 )
-                bg_encoded = encode_dcvc_frames_to_bytes(
+                bg_encoded = backend.encode_frames(
                     _iter_cached_frames(
                         cached_streams.get("bg_store", None),
                         cached_streams.get("bg_indices", []),
@@ -463,8 +467,10 @@ def compress_keep_streams_dcvc(
         encoded_meta=bg_meta,
         requested_indices=bg_indices,
     )
+    backend_meta = backend.to_metadata()
 
     meta: Dict[str, Any] = {
+        "codec": dict(backend_meta),
         "video": {
             "path": str(source_video),
             "width": int(src.width),
@@ -487,6 +493,7 @@ def compress_keep_streams_dcvc(
             "bg_qp_p": int(bg_qp_p),
         },
         "dcvc": {
+            **backend_meta,
             "repo_dir": str(repo_dir),
             "model_i": str(model_i),
             "model_p": str(model_p),

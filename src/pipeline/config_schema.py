@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from codec_backends import is_known_codec_backend, list_codec_backend_ids
+
 
 def _as_dict(v: Any, name: str, errors: list[str]) -> Dict[str, Any]:
     if not isinstance(v, dict):
@@ -254,6 +256,10 @@ def validate_pipeline_config(cfg: Dict[str, Any], video_path: Optional[str] = No
     for key in ("model_i", "model_p", "repo_dir"):
         if not dcvc_cfg.get(key):
             errors.append(f"compression.dcvc.{key} is required")
+    if "backend" in dcvc_cfg and not is_known_codec_backend(dcvc_cfg.get("backend")):
+        errors.append(
+            "compression.dcvc.backend must be one of: {}".format(", ".join(list_codec_backend_ids()))
+        )
     if dcvc_cfg.get("model_i"):
         _must_exist(str(dcvc_cfg["model_i"]), "compression.dcvc.model_i", root, errors)
     if dcvc_cfg.get("model_p"):

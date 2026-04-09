@@ -76,6 +76,7 @@ def _read_archive_metrics(archive_path: Path) -> Dict[str, Any]:
     roi_meta = meta.get("roi_detection", {}) or {}
     model_selection = roi_meta.get("model_selection", {}) or {}
     runtime_meta = meta.get("runtime", {}) or {}
+    dcvc_meta = meta.get("dcvc", {}) or {}
     roi_kept = frame_drop_json.get("roi_kept_frames", frame_drop_json.get("kept_frames", [])) or []
     bg_kept = frame_drop_json.get("bg_kept_frames", frame_drop_json.get("kept_frames", [])) or []
     roi_dropped = frame_drop_json.get("roi_dropped_frames", frame_drop_json.get("dropped_frames", [])) or []
@@ -104,6 +105,8 @@ def _read_archive_metrics(archive_path: Path) -> Dict[str, Any]:
         "roi_model_path_selected": str(model_selection.get("selected_model_path", "")),
         "roi_model_prefer_onnx": bool(model_selection.get("prefer_onnx", False)),
         "roi_model_prefer_onnx_strict": bool(model_selection.get("prefer_onnx_strict", False)),
+        "dcvc_backend": str(dcvc_meta.get("backend", "")),
+        "dcvc_integerized": bool(dcvc_meta.get("integerized", False)),
         "dcvc_device_selected": str(runtime_meta.get("dcvc_device_selected", "")),
         "dcvc_cuda_idx_selected": runtime_meta.get("dcvc_cuda_idx_selected", None),
         "meta_size_reported": meta.get("sizes", {}),
@@ -208,6 +211,8 @@ def _check_reproducibility(run_summaries: List[Dict[str, Any]]) -> List[str]:
         "roi_model_path_selected",
         "roi_model_prefer_onnx",
         "roi_model_prefer_onnx_strict",
+        "dcvc_backend",
+        "dcvc_integerized",
         "dcvc_device_selected",
         "dcvc_cuda_idx_selected",
     ]

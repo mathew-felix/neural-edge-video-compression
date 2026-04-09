@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import yaml
+from codec_backends import is_known_codec_backend, list_codec_backend_ids
 
 from .interpolation_amt import AmtInterpolator
 try:
@@ -70,6 +71,8 @@ def _validate_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(dec)
     out.setdefault("codec", "mp4v")
     out.setdefault("mask_source", "roi_detection")
+    out.setdefault("decoded_frame_store", "auto")
+    out.setdefault("decoded_frame_store_threshold_mb", 1024)
     # Temporal ROI stabilization to reduce patch flicker/jitter.
     out.setdefault("roi_temporal_stabilize", True)
     out.setdefault("roi_temporal_alpha_still", 0.70)
@@ -130,12 +133,29 @@ def _validate_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     dcvc = out.get("dcvc", {}) or {}
     if not isinstance(dcvc, dict):
         dcvc = {}
+    backend = dcvc.get("backend", None)
+    if backend is not None and not is_known_codec_backend(backend):
+        raise ValueError(
+            "decompression.dcvc.backend must be one of: {}".format(", ".join(list_codec_backend_ids()))
+        )
     if "use_cuda" in dcvc and _coerce_bool(dcvc.get("use_cuda"), default=True) is False:
         raise ValueError("Strict GPU runtime forbids decompression.dcvc.use_cuda=false.")
     dcvc_dev = str(dcvc.get("device", "cuda")).strip().lower()
     if dcvc_dev in {"cpu", "mps"}:
         raise ValueError("Strict GPU runtime forbids decompression.dcvc.device set to CPU/MPS.")
     out["dcvc"] = dcvc
+
+    decoded_frame_store = str(out.get("decoded_frame_store", "auto")).strip().lower()
+    if decoded_frame_store not in {"auto", "memmap", "cache"}:
+        raise ValueError("decompression.decoded_frame_store must be one of: auto, memmap, cache")
+    out["decoded_frame_store"] = decoded_frame_store
+    try:
+        decoded_frame_store_threshold_mb = int(out.get("decoded_frame_store_threshold_mb", 1024))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("decompression.decoded_frame_store_threshold_mb must be an integer >= 1") from exc
+    if decoded_frame_store_threshold_mb < 1:
+        raise ValueError("decompression.decoded_frame_store_threshold_mb must be >= 1")
+    out["decoded_frame_store_threshold_mb"] = int(decoded_frame_store_threshold_mb)
     return out
 
 

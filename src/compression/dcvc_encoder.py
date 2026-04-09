@@ -69,9 +69,16 @@ def _setup_dcvc_imports(dcvc_repo_dir: str) -> Path:
     if not repo.exists():
         raise FileNotFoundError(f"DCVC repo not found: {repo}")
 
-    # If this project's folder created a namespace package called "src", remove it so DCVC can import its own.
-    if "src" in sys.modules:
-        del sys.modules["src"]
+    # If this project's folder created a namespace package called "src", remove
+    # it (and all submodules) so DCVC can import its own `src.*` tree.
+    # Removing only `src` is insufficient when `src.<module>` entries are still
+    # cached and can force Python to reuse the wrong package graph.
+    stale = [name for name in list(sys.modules.keys()) if name == "src" or name.startswith("src.")]
+    for name in stale:
+        try:
+            del sys.modules[name]
+        except Exception:
+            pass
 
     if str(repo) in sys.path:
         # move it to front
