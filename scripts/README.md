@@ -2,6 +2,12 @@
 
 These scripts verify the main pipeline stages on a small input. They are not a replacement for the full thesis evaluation.
 
+For conference-scale runs, use:
+
+- `scripts/run_conference_matrix.py` for structured DGX/laptop run logging
+- `scripts/run_dgx_fixed_codec_encode.py` for fixed AV1(ROI)+HEVC(BG) DGX encode sweeps with resume
+- `scripts/plot_conference_results.py` for publication figure generation
+
 ## Model Download
 
 Download all required models:
@@ -32,7 +38,7 @@ Notes:
 ## 1. ROI Detection
 
 ```bash
-python scripts/test_roi_detection.py --video data/tune/video.mp4
+python scripts/test_roi_detection.py --video data/test.mp4
 ```
 
 Inspect:
@@ -43,7 +49,7 @@ Inspect:
 ## 2. Frame Removal
 
 ```bash
-python scripts/test_frame_removal.py --video data/tune/video.mp4
+python scripts/test_frame_removal.py --video data/test.mp4
 ```
 
 Inspect:
@@ -56,7 +62,7 @@ Inspect:
 ## 3. Compression
 
 ```bash
-python scripts/test_compression.py --video data/tune/video.mp4 --repeat 2
+python scripts/test_compression.py --video data/test.mp4 --repeat 2
 ```
 
 Checks:
@@ -79,7 +85,7 @@ Checks:
 ## 5. Full Visual End-To-End Check
 
 ```bash
-python run_compression.py data/tune/video.mp4 --config configs/gpu/compression.yaml --output outputs/video.zip
+python run_compression.py data/test.mp4 --config configs/gpu/compression.yaml --output outputs/video.zip
 python run_decompression.py outputs/video.zip --config configs/gpu/decompression.yaml --output outputs/sanity_checks/reconstructed/video.mp4
 ```
 

@@ -1,0 +1,30 @@
+[
+  {
+    "method": "uniform_ffmpeg",
+    "variant": "baseline_default"
+  },
+  {
+    "method": "roi_unaware_control",
+    "variant": "control_default"
+  },
+  {
+    "method": "roi_aware_main",
+    "variant": "main_default"
+  },
+  {
+    "method": "roi_aware_main",
+    "variant": "ablation_qp_low"
+  },
+  {
+    "method": "roi_aware_main",
+    "variant": "ablation_qp_high"
+  },
+  {
+    "method": "roi_aware_main",
+    "variant": "ablation_frame_removal_low"
+  },
+  {
+    "method": "roi_aware_main",
+    "variant": "ablation_frame_removal_high"
+  }
+]

@@ -1,9 +1,4 @@
-# SHA256 checksums for model files validated on 2026-04-04.
-# Format: <sha256>  <relative path>
-
-8e259cf07c3adfd53555bbb0a73221d24f4a08735a40f8375a6b6ac10fac8cf6  models/amt-l.pth
-b0e5999aa804efb851936b6fe949281725e2f4820876fecc0103874ce41ed85d  models/amt-s.pth
-555eff5f4026774f477bebdcbb3b52548e0da230803959dcebcea4d732a90dd9  models/cvpr2025_image.pth.tar
-b12e7faf4ddb6126d8e138a627ed6a349b8e1052d3ed9e343e1ba266466675d6  models/cvpr2025_video.pth.tar
-d31c708763d93e2680131cb915169f6b16ef009e50bc31179872dfcdc5d5ddeb  models/MDV6-yolov9-c.onnx
-daa6cd5d2e3fd52754889cd9c702f73c0349a8388318952e6eaf83e0667543e4  models/MDV6-yolov9-c.pt
+3c0d7cff93dd4a1e0c8500e9b9bcc24d86ac6feff4efc81f3d227f16b318e429  amt-l.pth
+9eb5af2fead0cdb26644a330f6b554f728fa365b1d7b1d799f607f7f60f68dca  amt-s.pth
+03a87216d44ee5839ef3f1ffbf2f2633f6d3367426597f58f94f00d72ec48f16  MDV6-yolov9-c.onnx
+132fd31a77d58465931cef6c59c6f9a7763879342cd3e1ab7190af0f1566c125  MDV6-yolov9-c.pt

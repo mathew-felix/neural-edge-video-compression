@@ -88,7 +88,6 @@ def _normalize_cuda_device(raw_device: Any, *, field_name: str) -> Tuple[str, Op
         raise ValueError(f"Strict GPU runtime forbids {field_name} set to CPU/MPS.")
     raise ValueError(f"{field_name} must be one of: auto, cuda, cuda:<index>, or integer GPU index.")
 
-
 class _LosslessEvalWriter:
     def __init__(self, *, out_path: Path, width: int, height: int, fps: float, ffmpeg_bin: str = "ffmpeg") -> None:
         self.out_path = out_path
@@ -222,28 +221,13 @@ class _LosslessYuv420Writer:
 
 
 def _enforce_strict_gpu_runtime(dec_cfg: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
-    if not bool(torch.cuda.is_available()):
-        raise RuntimeError("Strict GPU runtime requires CUDA, but torch.cuda.is_available() is false.")
-
-    dcvc_cfg = (meta.get("dcvc", {}) or {}).copy()
-    if not _coerce_bool(dcvc_cfg.get("use_cuda", True), default=True):
-        raise ValueError("Strict GPU runtime forbids decompression dcvc.use_cuda=false.")
-    dcvc_device = str(dcvc_cfg.get("device", "cuda")).strip().lower()
-    if dcvc_device in {"cpu", "mps"}:
-        raise ValueError("Strict GPU runtime forbids decompression dcvc.device set to CPU/MPS.")
-    dcvc_selected_device, dcvc_selected_idx = _normalize_cuda_device(
-        dcvc_cfg.get("cuda_idx", dcvc_cfg.get("device", "cuda")),
-        field_name="decompression.dcvc.device",
-    )
-    dcvc_cfg["use_cuda"] = True
-    dcvc_cfg["device"] = str(dcvc_selected_device)
-    dcvc_cfg["cuda_idx"] = dcvc_selected_idx
-    meta["dcvc"] = dcvc_cfg
-
+    cuda_available = bool(torch.cuda.is_available())
     interp_cfg = (dec_cfg.get("interpolate", {}) or {}).copy()
     interp_selected_device = None
     interp_selected_idx = None
     if bool(interp_cfg.get("enable", True)):
+        if not cuda_available:
+            raise RuntimeError("AMT interpolation requires CUDA, but torch.cuda.is_available() is false.")
         interp_selected_device, interp_selected_idx = _normalize_cuda_device(
             interp_cfg.get("device", "cuda"),
             field_name="decompression.interpolate.device",
@@ -252,11 +236,9 @@ def _enforce_strict_gpu_runtime(dec_cfg: Dict[str, Any], meta: Dict[str, Any]) -
         dec_cfg["interpolate"] = interp_cfg
 
     return {
-        "runtime_mode": "strict_gpu_only",
-        "cuda_available": True,
-        "dcvc_device_selected": str(dcvc_cfg.get("device", "cuda")),
-        "dcvc_cuda_idx_selected": dcvc_selected_idx,
-        "dcvc_use_cuda_selected": bool(dcvc_cfg.get("use_cuda", True)),
+        "runtime_mode": "gpu_interpolation_only" if bool(interp_cfg.get("enable", True)) else "cpu_codec_only",
+        "cuda_available": bool(cuda_available),
+        "codec_backend_selected": "ffmpeg",
         "interpolate_enabled": bool((dec_cfg.get("interpolate", {}) or {}).get("enable", True)),
         "interpolate_device_selected": interp_selected_device,
         "interpolate_cuda_idx_selected": interp_selected_idx,
@@ -377,34 +359,25 @@ def _pick_fps(meta: Dict[str, Any], frame_drop_json: Dict[str, Any]) -> float:
         return float(stats["fps_in"])
     return 30.0
 
-
-def _apply_dcvc_overrides(meta: Dict[str, Any], dec_cfg: Dict[str, Any]) -> None:
-    dcvc_cfg = (meta.get("dcvc", {}) or {}).copy()
-    dcvc_override = dec_cfg.get("dcvc", {}) or {}
-    if not isinstance(dcvc_override, dict):
-        meta["dcvc"] = dcvc_cfg
+def _apply_codec_overrides(meta: Dict[str, Any], dec_cfg: Dict[str, Any]) -> None:
+    codec_cfg = (meta.get("codec", {}) or {}).copy()
+    if not isinstance(codec_cfg, dict):
+        codec_cfg = {}
+    archive_codec_override = dec_cfg.get("archive_codec", {})
+    codec_override = archive_codec_override if isinstance(archive_codec_override, dict) else {}
+    if not isinstance(codec_override, dict):
+        meta["codec"] = codec_cfg
         return
 
-    device_overridden = False
-    cuda_idx_overridden = False
-    for key in ("repo_dir", "model_i", "model_p", "device", "use_cuda", "cuda_idx", "force_zero_thres"):
-        value = dcvc_override.get(key, None)
+    for key in ("ffmpeg_bin", "ffprobe_bin"):
+        value = codec_override.get(key, None)
         if value is None:
             continue
         if isinstance(value, str) and not value.strip():
             continue
-        dcvc_cfg[key] = value
-        if key == "device":
-            device_overridden = True
-        elif key == "cuda_idx":
-            cuda_idx_overridden = True
+        codec_cfg[key] = value
 
-    # If the user explicitly overrides the device but not the CUDA index, let the
-    # runtime resolve the device string instead of inheriting a stale archive index.
-    if device_overridden and not cuda_idx_overridden:
-        dcvc_cfg.pop("cuda_idx", None)
-
-    meta["dcvc"] = dcvc_cfg
+    meta["codec"] = codec_cfg
 
 
 _AMT_MIN_SIDE = 128
@@ -847,7 +820,6 @@ def _build_roi_segment(
         batch_size=batch_size,
         max_crop_side=max_crop_side,
     )
-
     return segment
 
 
@@ -902,7 +874,7 @@ def main() -> None:
 
     payloads = rd._load_archive_payloads(archive_path)
     meta = json.loads(payloads["meta.json"].decode("utf-8"))
-    _apply_dcvc_overrides(meta, dec_cfg)
+    _apply_codec_overrides(meta, dec_cfg)
     runtime_device = _enforce_strict_gpu_runtime(dec_cfg, meta)
     roi_json = json.loads(payloads["roi_detections.json"].decode("utf-8"))
     frame_drop_json = json.loads(payloads["frame_drop.json"].decode("utf-8"))
@@ -925,26 +897,26 @@ def main() -> None:
         if bg_decode_limit <= 0:
             bg_decode_limit = 1
 
-    rd._log(
-        "decompression_parallel.start",
-        archive=str(archive_path),
-        output=str(out_path),
-        interpolate=bool((dec_cfg.get("interpolate", {}) or {}).get("enable", False)),
-        roi_temporal_stabilize=bool(roi_temporal_stabilize),
-        roi_alpha_still=float(roi_alpha_still),
-        roi_alpha_motion=float(roi_alpha_motion),
-        roi_blend_edge_px=int(roi_blend_edge_px),
-        roi_temporal_mask_dilate=int(roi_temporal_mask_dilate),
-        roi_temporal_overlap_only=bool(roi_temporal_overlap_only),
-        amt_workers=amt_workers_applied,
-        amt_workers_requested=amt_workers_requested,
-        amt_batch_size=int(amt_batch_size),
-        amt_crop_margin=int(amt_crop_margin),
-        amt_max_crop_side=int(amt_max_crop_side),
-        dcvc_repo_dir=str((meta.get("dcvc", {}) or {}).get("repo_dir", "")),
-        amt_repo_dir=str((dec_cfg.get("interpolate", {}) or {}).get("repo_dir", "")),
-        runtime_mode=str(runtime_device.get("runtime_mode", "")),
-    )
+    log_payload: Dict[str, Any] = {
+        "archive": str(archive_path),
+        "output": str(out_path),
+        "interpolate": bool((dec_cfg.get("interpolate", {}) or {}).get("enable", False)),
+        "roi_temporal_stabilize": bool(roi_temporal_stabilize),
+        "roi_alpha_still": float(roi_alpha_still),
+        "roi_alpha_motion": float(roi_alpha_motion),
+        "roi_blend_edge_px": int(roi_blend_edge_px),
+        "roi_temporal_mask_dilate": int(roi_temporal_mask_dilate),
+        "roi_temporal_overlap_only": bool(roi_temporal_overlap_only),
+        "amt_workers": amt_workers_applied,
+        "amt_workers_requested": amt_workers_requested,
+        "amt_batch_size": int(amt_batch_size),
+        "amt_crop_margin": int(amt_crop_margin),
+        "amt_max_crop_side": int(amt_max_crop_side),
+        "codec_ffmpeg_bin": str((meta.get("codec", {}) or {}).get("ffmpeg_bin", "ffmpeg")),
+        "amt_repo_dir": str((dec_cfg.get("interpolate", {}) or {}).get("repo_dir", "")),
+        "runtime_mode": str(runtime_device.get("runtime_mode", "")),
+    }
+    rd._log("decompression_parallel.start", **log_payload)
 
     decoded_roi_updates = [0]
     decoded_bg_updates = [0]
@@ -1172,7 +1144,8 @@ def main() -> None:
                     ri = int(roi_indices[right_slot])
                     if right_slot == left_slot or t <= li or t >= ri:
                         out = _anchor_context_at(
-                            slot=int(left_slot if t <= li else right_slot), **_ctx_kwargs,
+                            slot=int(left_slot if t <= li else right_slot),
+                            **_ctx_kwargs,
                         )
                     else:
                         if (
